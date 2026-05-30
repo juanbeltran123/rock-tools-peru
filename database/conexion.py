@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client
 import pandas as pd
-
+import os
 # ============================================================================
 # CONEXIÓN A SUPABASE
 # ============================================================================
@@ -10,12 +10,19 @@ import pandas as pd
 def get_supabase():
     """
     Conexión a Supabase.
-    Lee las credenciales desde st.secrets (archivo .streamlit/secrets.toml)
+    En local: lee desde st.secrets (archivo .streamlit/secrets.toml)
+    En producción (Render): lee desde os.environ (variables de entorno)
     """
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    # Intentar leer desde st.secrets primero (local)
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+    except:
+        # Si falla, leer desde variables de entorno (Render)
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+    
     return create_client(url, key)
-
 
 # ============================================================================
 # CONSULTAS GENÉRICAS
