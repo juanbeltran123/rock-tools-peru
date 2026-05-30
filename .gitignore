@@ -1,0 +1,11 @@
+.streamlit/
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+.env
+*.zip
+.~*
+assets/
+
+
