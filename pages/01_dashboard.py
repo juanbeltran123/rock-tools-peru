@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
-from database.conexion import run_query, run_query_in
+from database.conexion import run_query, get_supabase
 
 # Configuración
 st.set_page_config(
@@ -153,6 +153,8 @@ with header_cols[1]:
         if st.button("📚 Maestros", key="nav_maes", use_container_width=True):
             st.switch_page("pages/05_maestros.py")
 
+
+
 with header_cols[2]:
     usuario = st.session_state.get('usuario', 'Usuario')
     st.markdown(f"""
@@ -177,27 +179,33 @@ st.markdown("Resumen global del negocio")
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ============================================================================
-# OBTENER PERIODOS DISPONIBLES (MODIFICADO)
+# OBTENER PERIODOS DISPONIBLES
 # ============================================================================
 try:
-    # Obtener periodos de las diferentes fuentes
-    df1 = run_query("vw_general_semanal", select="periodo")
-    df2 = run_query("vw_cpm_resultado", select="periodo")
-    df3 = run_query("vw_venta", select="periodo")
+    # Obtener periodos de las tres vistas
+    df_periodos1 = run_query("vw_general_semanal", select="periodo")
+    df_periodos2 = run_query("vw_cpm_resultado", select="periodo")
+    df_periodos3 = run_query("vw_venta", select="periodo")
     
-    # Combinar y obtener únicos
-    todos_periodos = pd.concat([df1, df2, df3], ignore_index=True)
-    periodos_disponibles = todos_periodos['periodo'].drop_duplicates().sort_values(ascending=False).tolist()
-except Exception as e:
-    st.write(f"Error: {e}")
+    periodos_set = set()
+    if not df_periodos1.empty:
+        periodos_set.update(df_periodos1['periodo'].tolist())
+    if not df_periodos2.empty:
+        periodos_set.update(df_periodos2['periodo'].tolist())
+    if not df_periodos3.empty:
+        periodos_set.update(df_periodos3['periodo'].tolist())
+    
+    periodos_disponibles = sorted(list(periodos_set), reverse=True)
+except:
     periodos_disponibles = []
 
 if not periodos_disponibles:
     periodos_disponibles = [datetime.now().strftime("%Y-%m")]
 
 # ============================================================================
-# FILTROS
+# FILTROS (con lógica similar a contratos) - MODIFICADO: ahora más compactos
 # ============================================================================
+# Usar columns con proporciones más pequeñas para los filtros
 col_f1, col_f2, col_spacer = st.columns([1, 1, 3])
 
 with col_f1:
@@ -210,28 +218,36 @@ with col_f1:
     )
     
     if "TODOS" in periodos_seleccionados:
-        periodos_seleccionados = periodos_disponibles.copy()
+        periodos_seleccionados = periodos_disponibles
     
+    # Guardar copia original para comparar después
     periodos_originales = periodos_seleccionados.copy()
 
 with col_f2:
+    # Construir opciones de semana según períodos seleccionados
     if periodos_seleccionados:
-        # Obtener datos de vw_general_semanal para los períodos seleccionados
-        df_general = run_query_in("vw_general_semanal", "periodo", periodos_seleccionados)
+        # Obtener semanas AVANCE disponibles
+        df_semanas = run_query("vw_general_semanal", 
+                               select="semana",
+                               filters={"periodo": periodos_seleccionados, "tipo_reporte": "AVANCE"})
+        if not df_semanas.empty:
+            semanas_avance = df_semanas[df_semanas['semana'] > 0]['semana'].unique().tolist()
+            semanas_avance.sort()
+        else:
+            semanas_avance = []
         
-        # Obtener semanas AVANCE
-        df_avance = df_general[(df_general['tipo_reporte'] == 'AVANCE') & (df_general['semana'] > 0)]
-        semanas_avance = df_avance['semana'].drop_duplicates().sort_values().tolist()
-        
-        # Verificar períodos con CIERRE
-        df_cierre = df_general[df_general['tipo_reporte'] == 'CIERRE']
-        periodos_con_cierre = df_cierre['periodo'].drop_duplicates().tolist()
+        # Verificar si existen períodos con CIERRE
+        df_cierre = run_query("vw_general_semanal", 
+                             select="periodo",
+                             filters={"periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
+        periodos_con_cierre = df_cierre['periodo'].unique().tolist() if not df_cierre.empty else []
         tiene_cierre = len(periodos_con_cierre) > 0
     else:
         semanas_avance = []
         tiene_cierre = False
         periodos_con_cierre = []
     
+    # Construir opciones del selectbox
     opciones_semanas = []
     if tiene_cierre:
         opciones_semanas.append("CIERRE")
@@ -250,7 +266,7 @@ with col_f2:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ============================================================================
-# CONSTRUIR FILTROS
+# CONSTRUIR FILTROS (misma lógica que contratos)
 # ============================================================================
 if not periodos_seleccionados:
     st.warning("⚠️ No hay períodos seleccionados")
@@ -258,25 +274,31 @@ if not periodos_seleccionados:
 
 # Construir filtro de semana según selección
 if semana_seleccionada == "CIERRE":
+    # Filtrar solo períodos que tienen CIERRE
     if periodos_con_cierre:
         periodos_seleccionados = [p for p in periodos_seleccionados if p in periodos_con_cierre]
         if len(periodos_seleccionados) < len(periodos_originales):
             st.info(f"📌 Mostrando solo períodos con CIERRE: {', '.join(periodos_seleccionados)}")
-        usar_cierre = True
-        semana_valor = None
     else:
         st.error("❌ Ninguno de los períodos seleccionados tiene datos de CIERRE")
         st.stop()
+    
+    filtro_tipo_reporte = "CIERRE"
+    filtro_semana_valor = None
 elif semana_seleccionada == "TODAS":
-    usar_cierre = False
-    semana_valor = None
+    # Mostrar todos los datos sin filtrar por semana específica
+    filtro_tipo_reporte = "AVANCE"
+    filtro_semana_valor = None
 else:
     semana_valor = int(semana_seleccionada)
-    usar_cierre = False
-    
     # Verificar qué períodos tienen esta semana AVANCE
-    df_avance_filtro = df_general[(df_general['tipo_reporte'] == 'AVANCE') & (df_general['semana'] == semana_valor)]
-    periodos_con_semana = df_avance_filtro['periodo'].drop_duplicates().tolist()
+    df_periodos_con_semana = run_query("vw_general_semanal",
+                                       select="periodo",
+                                       filters={"periodo": periodos_originales, 
+                                               "tipo_reporte": "AVANCE",
+                                               "semana": semana_valor})
+    
+    periodos_con_semana = df_periodos_con_semana['periodo'].unique().tolist() if not df_periodos_con_semana.empty else []
     
     if periodos_con_semana:
         periodos_seleccionados = [p for p in periodos_seleccionados if p in periodos_con_semana]
@@ -285,34 +307,56 @@ else:
     else:
         st.error(f"❌ Ninguno de los períodos seleccionados tiene datos de semana {semana_valor}")
         st.stop()
-
-# ============================================================================
-# FUNCIÓN PARA OBTENER DATOS FILTRADOS
-# ============================================================================
-def get_datos_filtrados():
-    """Obtiene los datos de vw_general_semanal aplicando los filtros"""
-    df = run_query_in("vw_general_semanal", "periodo", periodos_seleccionados)
     
-    # Aplicar filtro de semana
-    if usar_cierre:
-        df = df[df['tipo_reporte'] == 'CIERRE']
-    elif semana_valor is not None:
-        df = df[(df['tipo_reporte'] == 'AVANCE') & (df['semana'] == semana_valor)]
-    else:
-        df = df[df['tipo_reporte'] == 'AVANCE']
-    
-    return df
+    filtro_tipo_reporte = "AVANCE"
+    filtro_semana_valor = semana_valor
 
 # ============================================================================
-# KPIS
+# FUNCIÓN PARA CONSULTAS SEGURAS
 # ============================================================================
-df_kpis = get_datos_filtrados()
+def safe_query_dataframe(df, default=0):
+    try:
+        if df.empty:
+            return default
+        val = df.iloc[0, 0]
+        return val if val is not None else default
+    except Exception as e:
+        print(f"Error en query: {e}")
+        return default
 
-ingresos_cpm = df_kpis[df_kpis['tipo'] == 'CPM']['ingresos'].sum() if 'ingresos' in df_kpis.columns else 0
-ingresos_venta = df_kpis[df_kpis['tipo'] == 'VENTA']['ingresos'].sum() if 'ingresos' in df_kpis.columns else 0
-costos_cpm = df_kpis[df_kpis['tipo'] == 'CPM']['costos'].sum() if 'costos' in df_kpis.columns else 0
-costos_venta = df_kpis[df_kpis['tipo'] == 'VENTA']['costos'].sum() if 'costos' in df_kpis.columns else 0
-costos_afiladoras = df_kpis[df_kpis['tipo'] == 'AFILADORAS']['otros_costos'].sum() if 'otros_costos' in df_kpis.columns else 0
+# ============================================================================
+# KPIS - Usando vw_general_semanal
+# ============================================================================
+# Construir filtros base
+filtros_base = {"periodo": periodos_seleccionados, "tipo_reporte": filtro_tipo_reporte}
+if filtro_semana_valor is not None:
+    filtros_base["semana"] = filtro_semana_valor
+
+# Ingresos CPM
+filtros_cpm = filtros_base.copy()
+filtros_cpm["tipo"] = "CPM"
+df_ingresos_cpm = run_query("vw_general_semanal", select="ingresos", filters=filtros_cpm)
+ingresos_cpm = df_ingresos_cpm['ingresos'].sum() if not df_ingresos_cpm.empty else 0
+
+# Ingresos VENTA
+filtros_venta = filtros_base.copy()
+filtros_venta["tipo"] = "VENTA"
+df_ingresos_venta = run_query("vw_general_semanal", select="ingresos", filters=filtros_venta)
+ingresos_venta = df_ingresos_venta['ingresos'].sum() if not df_ingresos_venta.empty else 0
+
+# Costos CPM
+df_costos_cpm = run_query("vw_general_semanal", select="costos", filters=filtros_cpm)
+costos_cpm = df_costos_cpm['costos'].sum() if not df_costos_cpm.empty else 0
+
+# Costos VENTA
+df_costos_venta = run_query("vw_general_semanal", select="costos", filters=filtros_venta)
+costos_venta = df_costos_venta['costos'].sum() if not df_costos_venta.empty else 0
+
+# Costos AFILADORAS
+filtros_afiladoras = filtros_base.copy()
+filtros_afiladoras["tipo"] = "AFILADORAS"
+df_afiladoras = run_query("vw_general_semanal", select="otros_costos", filters=filtros_afiladoras)
+costos_afiladoras = df_afiladoras['otros_costos'].sum() if not df_afiladoras.empty else 0
 
 # Totales
 ingresos_totales = ingresos_cpm + ingresos_venta
@@ -354,40 +398,52 @@ st.markdown("<br>", unsafe_allow_html=True)
 with st.container(border=True):
     st.markdown("### 📈 Ingresos vs Costos - Evolución Mensual")
     
-    # Crear columna de mes a partir del periodo
-    df_evolucion = df_kpis.copy()
+    # Extraer mes de los períodos seleccionados
+    periodos_para_evolucion = periodos_seleccionados
+    
+    # Obtener datos de evolución
+    df_evolucion = run_query("vw_general_semanal",
+                             select="periodo, tipo, ingresos, costos, otros_costos",
+                             filters={"periodo": periodos_para_evolucion})
+    
+    # Aplicar filtro de semana si existe
+    if filtro_semana_valor is not None:
+        df_evolucion = df_evolucion[df_evolucion['tipo_reporte'] == filtro_tipo_reporte]
+        df_evolucion = df_evolucion[df_evolucion['semana'] == filtro_semana_valor]
+    else:
+        df_evolucion = df_evolucion[df_evolucion['tipo_reporte'] == filtro_tipo_reporte]
+    
     if not df_evolucion.empty:
+        # Agrupar por mes
         df_evolucion['mes'] = df_evolucion['periodo'].str[5:7]
         
-        # Agrupar por mes
-        df_mensual = df_evolucion.groupby('mes').agg({
-            'ingresos': 'sum',
-            'costos': 'sum'
-        }).reset_index()
+        # Calcular ingresos y costos por mes
+        df_ingresos = df_evolucion[df_evolucion['tipo'].isin(['CPM', 'VENTA'])].groupby('mes')['ingresos'].sum().reset_index()
+        df_costos_total = df_evolucion.groupby('mes').apply(
+            lambda x: x[x['tipo'].isin(['CPM', 'VENTA'])]['costos'].sum() + x['otros_costos'].sum()
+        ).reset_index(name='costos')
         
-        # Agregar otros_costos
-        df_otros = df_evolucion.groupby('mes')['otros_costos'].sum().reset_index()
-        df_mensual = df_mensual.merge(df_otros, on='mes', how='left')
-        df_mensual['costos'] = df_mensual['costos'] + df_mensual['otros_costos'].fillna(0)
+        df_evolucion_mes = df_ingresos.merge(df_costos_total, on='mes')
+        df_evolucion_mes.columns = ['mes', 'ingresos', 'costos']
         
-        if not df_mensual.empty:
+        if not df_evolucion_mes.empty:
             meses_map = {'01': 'Ene', '02': 'Feb', '03': 'Mar', '04': 'Abr', '05': 'May', '06': 'Jun',
                         '07': 'Jul', '08': 'Ago', '09': 'Sep', '10': 'Oct', '11': 'Nov', '12': 'Dic'}
             
-            df_mensual['mes_nombre'] = df_mensual['mes'].map(meses_map)
-            df_mensual = df_mensual.sort_values('mes')
+            df_evolucion_mes['mes_nombre'] = df_evolucion_mes['mes'].map(meses_map)
+            df_evolucion_mes = df_evolucion_mes.sort_values('mes')
             
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=df_mensual['mes_nombre'], 
-                y=df_mensual['ingresos'], 
+                x=df_evolucion_mes['mes_nombre'], 
+                y=df_evolucion_mes['ingresos'], 
                 mode='lines+markers',
                 name='Ingresos', 
                 line=dict(color='#1152d4', width=3)
             ))
             fig.add_trace(go.Scatter(
-                x=df_mensual['mes_nombre'], 
-                y=df_mensual['costos'], 
+                x=df_evolucion_mes['mes_nombre'], 
+                y=df_evolucion_mes['costos'], 
                 mode='lines+markers',
                 name='Costos', 
                 line=dict(color='#ef4444', width=3)
@@ -409,48 +465,61 @@ with st.container(border=True):
     st.markdown("### 📊 Márgenes por Contrato")
     
     # Obtener datos de contratos
-    df_contratos = df_kpis.groupby('id_contrato').agg({
-        'ingresos': 'sum',
-        'costos': 'sum'
-    }).reset_index()
+    df_contratos_raw = run_query("vw_general_semanal",
+                                 select="id_contrato, tipo, ingresos, costos, otros_costos",
+                                 filters={"periodo": periodos_seleccionados, "tipo_reporte": filtro_tipo_reporte})
     
-    # Agregar otros_costos
-    df_otros_contratos = df_kpis.groupby('id_contrato')['otros_costos'].sum().reset_index()
-    df_contratos = df_contratos.merge(df_otros_contratos, on='id_contrato', how='left')
-    df_contratos['costos'] = df_contratos['costos'] + df_contratos['otros_costos'].fillna(0)
+    if filtro_semana_valor is not None:
+        df_contratos_raw = df_contratos_raw[df_contratos_raw['semana'] == filtro_semana_valor]
     
-    # Obtener nombres de contratos
-    df_contratos_nombres = run_query("contratos", select="id, nombre")
-    df_contratos = df_contratos.merge(df_contratos_nombres, left_on='id_contrato', right_on='id', how='left')
-    
-    df_contratos = df_contratos[df_contratos['ingresos'] > 0]
-    
-    if not df_contratos.empty:
-        df_contratos['margen'] = (1 - df_contratos['costos'] / df_contratos['ingresos']) * 100
-        df_contratos = df_contratos.sort_values('margen', ascending=True)
+    if not df_contratos_raw.empty:
+        # Obtener nombres de contratos
+        df_contratos_nombres = run_query("contratos", select="id, nombre")
+        contratos_dict = dict(zip(df_contratos_nombres['id'], df_contratos_nombres['nombre']))
         
-        colores = ['#10b981' if m >= 42 else '#f59e0b' if m >= 30 else '#ef4444' for m in df_contratos['margen']]
+        # Agrupar por contrato
+        df_contratos_agg = []
+        for contrato_id in df_contratos_raw['id_contrato'].unique():
+            df_cont = df_contratos_raw[df_contratos_raw['id_contrato'] == contrato_id]
+            ingresos = df_cont[df_cont['tipo'].isin(['CPM', 'VENTA'])]['ingresos'].sum()
+            costos = df_cont[df_cont['tipo'].isin(['CPM', 'VENTA'])]['costos'].sum() + df_cont['otros_costos'].sum()
+            if ingresos > 0:
+                df_contratos_agg.append({
+                    'contrato': contratos_dict.get(contrato_id, f"ID:{contrato_id}"),
+                    'ingresos': ingresos,
+                    'costos': costos
+                })
         
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=df_contratos['margen'],
-            y=df_contratos['nombre'],
-            orientation='h',
-            marker_color=colores,
-            text=df_contratos['margen'].round(1).astype(str) + '%',
-            textposition='outside'
-        ))
-        fig.add_vline(x=42, line_dash="dash", line_color="green", annotation_text="Objetivo 42%")
+        df_contratos = pd.DataFrame(df_contratos_agg)
         
-        fig.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        if not df_contratos.empty:
+            df_contratos['margen'] = (1 - df_contratos['costos'] / df_contratos['ingresos']) * 100
+            df_contratos = df_contratos.sort_values('margen', ascending=True)
+            
+            colores = ['#10b981' if m >= 42 else '#f59e0b' if m >= 30 else '#ef4444' for m in df_contratos['margen']]
+            
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=df_contratos['margen'],
+                y=df_contratos['contrato'],
+                orientation='h',
+                marker_color=colores,
+                text=df_contratos['margen'].round(1).astype(str) + '%',
+                textposition='outside'
+            ))
+            fig.add_vline(x=42, line_dash="dash", line_color="green", annotation_text="Objetivo 42%")
+            
+            fig.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No hay datos de contratos para los filtros seleccionados")
     else:
-        st.info("No hay datos de contratos para los filtros seleccionados")
+        st.info("No hay datos disponibles")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ============================================================================
-# TABLA DE CONTRATOS Y ALERTAS
+# TABLA DE CONTRATOS Y ALERTAS (ELIMINADO "Últimas Cargas")
 # ============================================================================
 col_tabla, col_alertas = st.columns([2, 1])
 
@@ -458,9 +527,9 @@ with col_tabla:
     with st.container(border=True):
         st.markdown("### 📋 Contratos Activos")
         
-        df_tabla = df_contratos.copy()
-        
-        if not df_tabla.empty:
+        # Usar los mismos datos ya obtenidos
+        if 'df_contratos' in locals() and not df_contratos.empty:
+            df_tabla = df_contratos.copy()
             df_tabla['ingresos'] = df_tabla['ingresos'].apply(lambda x: f"${x:,.0f}")
             
             def formato_margen(row):
@@ -473,7 +542,7 @@ with col_tabla:
                     return f"{m:.1f}% 🔴"
             
             df_tabla['margen'] = df_tabla.apply(formato_margen, axis=1)
-            df_tabla = df_tabla[['nombre', 'ingresos', 'margen']]
+            df_tabla = df_tabla[['contrato', 'ingresos', 'margen']]
             df_tabla.columns = ['Contrato', 'Ingresos', 'Margen']
             
             st.dataframe(df_tabla, use_container_width=True, hide_index=True)
@@ -484,14 +553,15 @@ with col_alertas:
     with st.container(border=True):
         st.markdown("### ⚠️ Alertas")
         
-        if not df_contratos.empty:
+        # Usar los mismos datos ya obtenidos
+        if 'df_contratos' in locals() and not df_contratos.empty:
             alertas = []
             
             for _, row in df_contratos.iterrows():
                 if row['margen'] < 30:
-                    alertas.append(f"🔴 **{row['nombre']}** - Margen: {row['margen']:.1f}%")
+                    alertas.append(f"🔴 **{row['contrato']}** - Margen: {row['margen']:.1f}%")
                 elif row['margen'] < 42:
-                    alertas.append(f"🟡 **{row['nombre']}** - Margen: {row['margen']:.1f}%")
+                    alertas.append(f"🟡 **{row['contrato']}** - Margen: {row['margen']:.1f}%")
             
             if alertas:
                 for alerta in alertas[:5]:
@@ -531,42 +601,54 @@ with col_margen:
     with st.container(border=True):
         st.markdown("### 📈 Evolución del Margen")
         
-        df_margen_mensual = df_evolucion.copy()
-        if not df_margen_mensual.empty:
-            df_margen_mensual['mes'] = df_margen_mensual['periodo'].str[5:7]
+        # Calcular margen mensual
+        df_margen_mensual_raw = run_query("vw_general_semanal",
+                                         select="periodo, tipo, ingresos, costos, otros_costos",
+                                         filters={"periodo": periodos_seleccionados})
+        
+        if filtro_semana_valor is not None:
+            df_margen_mensual_raw = df_margen_mensual_raw[df_margen_mensual_raw['tipo_reporte'] == filtro_tipo_reporte]
+            df_margen_mensual_raw = df_margen_mensual_raw[df_margen_mensual_raw['semana'] == filtro_semana_valor]
+        else:
+            df_margen_mensual_raw = df_margen_mensual_raw[df_margen_mensual_raw['tipo_reporte'] == filtro_tipo_reporte]
+        
+        if not df_margen_mensual_raw.empty:
+            df_margen_mensual_raw['mes'] = df_margen_mensual_raw['periodo'].str[5:7]
             
-            # Agrupar por mes
-            df_margen_group = df_margen_mensual.groupby('mes').agg({
-                'ingresos': 'sum',
-                'costos': 'sum'
-            }).reset_index()
+            # Calcular margen por mes
+            df_margen_mensual = []
+            for mes in df_margen_mensual_raw['mes'].unique():
+                df_mes = df_margen_mensual_raw[df_margen_mensual_raw['mes'] == mes]
+                ingresos = df_mes[df_mes['tipo'].isin(['CPM', 'VENTA'])]['ingresos'].sum()
+                costos = df_mes[df_mes['tipo'].isin(['CPM', 'VENTA'])]['costos'].sum() + df_mes['otros_costos'].sum()
+                if ingresos > 0:
+                    margen = (1 - costos/ingresos) * 100
+                    df_margen_mensual.append({'mes': mes, 'margen': margen})
             
-            df_otros_group = df_margen_mensual.groupby('mes')['otros_costos'].sum().reset_index()
-            df_margen_group = df_margen_group.merge(df_otros_group, on='mes', how='left')
-            df_margen_group['costos'] = df_margen_group['costos'] + df_margen_group['otros_costos'].fillna(0)
+            df_margen_mensual = pd.DataFrame(df_margen_mensual)
             
-            df_margen_group['margen'] = (1 - df_margen_group['costos'] / df_margen_group['ingresos']) * 100
-            df_margen_group['margen'] = df_margen_group['margen'].fillna(0)
-            
-            meses_map = {'01': 'Ene', '02': 'Feb', '03': 'Mar', '04': 'Abr', '05': 'May', '06': 'Jun',
-                        '07': 'Jul', '08': 'Ago', '09': 'Sep', '10': 'Oct', '11': 'Nov', '12': 'Dic'}
-            
-            df_margen_group['mes_nombre'] = df_margen_group['mes'].map(meses_map)
-            df_margen_group = df_margen_group.sort_values('mes')
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=df_margen_group['mes_nombre'],
-                y=df_margen_group['margen'],
-                mode='lines+markers',
-                line=dict(color='#10b981', width=3),
-                fill='tozeroy'
-            ))
-            fig.add_hline(y=42, line_dash="dash", line_color="gray", annotation_text="Objetivo 42%")
-            
-            fig.update_layout(height=300, margin=dict(l=0, r=0, t=20, b=0))
-            st.plotly_chart(fig, use_container_width=True)
-        else:   
+            if not df_margen_mensual.empty:
+                meses_map = {'01': 'Ene', '02': 'Feb', '03': 'Mar', '04': 'Abr', '05': 'May', '06': 'Jun',
+                            '07': 'Jul', '08': 'Ago', '09': 'Sep', '10': 'Oct', '11': 'Nov', '12': 'Dic'}
+                
+                df_margen_mensual['mes_nombre'] = df_margen_mensual['mes'].map(meses_map)
+                df_margen_mensual = df_margen_mensual.sort_values('mes')
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=df_margen_mensual['mes_nombre'],
+                    y=df_margen_mensual['margen'],
+                    mode='lines+markers',
+                    line=dict(color='#10b981', width=3),
+                    fill='tozeroy'
+                ))
+                fig.add_hline(y=42, line_dash="dash", line_color="gray", annotation_text="Objetivo 42%")
+                
+                fig.update_layout(height=300, margin=dict(l=0, r=0, t=20, b=0))
+                st.plotly_chart(fig, use_container_width=True)
+            else:   
+                st.info("No hay datos de evolución mensual")
+        else:
             st.info("No hay datos de evolución mensual")
 
 # ============================================================================

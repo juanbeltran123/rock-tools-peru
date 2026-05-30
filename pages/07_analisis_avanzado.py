@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 from datetime import datetime
-from database.conexion import get_connection
+from database.conexion import run_query, get_supabase
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_percentage_error, r2_score
 
@@ -37,8 +37,6 @@ if 'autenticado' not in st.session_state or not st.session_state['autenticado']:
 
 if 'usuario' not in st.session_state:
     st.session_state['usuario'] = 'Admin'
-
-conn = get_connection()
 
 # ============================================================================
 # HEADER CON NAVEGACIÓN
@@ -110,24 +108,11 @@ st.markdown("---")
 @st.cache_data(ttl=3600)
 def cargar_datos_rentabilidad():
     """Carga datos desde la vista vw_rentabilidad_contrato_tipo"""
-    query = """
-    SELECT 
-        periodo,
-        semana,
-        tipo_reporte,
-        contrato_nombre,
-        cliente_nombre,
-        tipo_nombre,
-        total_metros,
-        tarifa,
-        ingreso_usd,
-        consumo_usd,
-        margen_usd,
-        margen_porcentual
-    FROM vw_rentabilidad_contrato_tipo
-    ORDER BY periodo, semana, contrato_nombre, tipo_nombre
-    """
-    df = pd.read_sql_query(query, conn)
+    df = run_query("vw_rentabilidad_contrato_tipo", 
+                   select="periodo, semana, tipo_reporte, contrato_nombre, cliente_nombre, tipo_nombre, total_metros, tarifa, ingreso_usd, consumo_usd, margen_usd, margen_porcentual")
+    
+    if not df.empty:
+        df = df.sort_values(['periodo', 'semana', 'contrato_nombre', 'tipo_nombre'])
     return df
 
 with st.spinner("Cargando datos..."):

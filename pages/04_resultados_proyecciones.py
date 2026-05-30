@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
-from database.conexion import get_connection
+from database.conexion import run_query, get_supabase
 import calendar
 import plotly.express as px
 import plotly.graph_objects as go
@@ -54,19 +54,12 @@ if 'autenticado' not in st.session_state or not st.session_state['autenticado']:
 if 'usuario' not in st.session_state:
     st.session_state['usuario'] = 'Admin'
 
-conn = get_connection()
-
 # Obtener conceptos de gastos
-df_conceptos = pd.read_sql("""
-    SELECT id, concepto 
-    FROM conceptos_gastos 
-    WHERE activo = 1 
-    ORDER BY concepto
-""", conn)
-conceptos_lista = df_conceptos.to_dict('records')
+df_conceptos = run_query("conceptos_gastos", select="id, concepto", filters={"activo": 1})
+conceptos_lista = df_conceptos.to_dict('records') if not df_conceptos.empty else []
 
 # Obtener contratos para usar en tab3 (Liquidación)
-contratos_global = pd.read_sql("SELECT id, nombre FROM contratos WHERE activo = 1 ORDER BY nombre", conn)
+contratos_global = run_query("contratos", select="id, nombre", filters={"activo": 1})
 contrato_opciones = {"TODOS": None}
 for _, c in contratos_global.iterrows():
     contrato_opciones[c['nombre']] = c['id']
@@ -147,7 +140,6 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 tab1, tab2, tab3 = st.tabs(["📊 ESTADO DE RESULTADOS", "📈 PROYECCIONES", "💵 LIQUIDACIÓN"])
 
-
 with tab1:
     st.markdown("### 📊 Estado de Resultados (Solo CIERRE)")
     st.caption("Los datos mostrados corresponden únicamente a CIERRE de cada período - valores finales")
@@ -156,12 +148,12 @@ with tab1:
     col_f1, col_f2, col_f3 = st.columns(3)
     
     with col_f1:
-        años = pd.read_sql("""
-            SELECT DISTINCT substr(periodo, 1, 4) as año 
-            FROM vw_general_semanal
-            WHERE tipo_reporte = 'CIERRE'
-            ORDER BY año DESC
-        """, conn)['año'].tolist()
+        df_años = run_query("vw_general_semanal", select="periodo", filters={"tipo_reporte": "CIERRE"})
+        if not df_años.empty:
+            df_años['año'] = df_años['periodo'].str[:4]
+            años = sorted(df_años['año'].unique(), reverse=True)
+        else:
+            años = [datetime.now().strftime("%Y")]
         
         año_seleccionado = st.selectbox(
             "📅 Año",
@@ -170,13 +162,11 @@ with tab1:
         )
     
     with col_f2:
-        periodos_disponibles = pd.read_sql(f"""
-            SELECT DISTINCT periodo 
-            FROM vw_general_semanal
-            WHERE periodo LIKE '{año_seleccionado}-%'
-              AND tipo_reporte = 'CIERRE'
-            ORDER BY periodo
-        """, conn)['periodo'].tolist()
+        df_periodos = run_query("vw_general_semanal", 
+                               select="periodo",
+                               filters={"periodo": f"{año_seleccionado}-%", "tipo_reporte": "CIERRE"})
+        periodos_disponibles = df_periodos['periodo'].unique().tolist() if not df_periodos.empty else []
+        periodos_disponibles.sort()
         
         opciones_periodos = ["TODOS"] + periodos_disponibles
         periodos_seleccionados = st.multiselect(
@@ -193,20 +183,17 @@ with tab1:
             st.warning("⚠️ Seleccione al menos un período")
             st.stop()
     
-    periodos_str_filtro = "', '".join(periodos_seleccionados)
+    # Contratos con datos
+    df_contratos_con_datos = run_query("vw_general_semanal",
+                                       select="id_contrato",
+                                       filters={"periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
+    ids_con_datos = df_contratos_con_datos['id_contrato'].unique().tolist() if not df_contratos_con_datos.empty else []
     
-    contratos_con_datos = pd.read_sql(f"""
-        SELECT DISTINCT c.id, c.nombre
-        FROM contratos c
-        INNER JOIN vw_general_semanal v ON c.id = v.id_contrato
-        WHERE v.periodo IN ('{periodos_str_filtro}')
-          AND v.tipo_reporte = 'CIERRE'
-          AND c.activo = 1
-        ORDER BY c.nombre
-    """, conn)
+    df_contratos_nombres = run_query("contratos", select="id, nombre", filters={"activo": 1})
+    df_contratos_nombres = df_contratos_nombres[df_contratos_nombres['id'].isin(ids_con_datos)] if ids_con_datos else pd.DataFrame()
     
     contrato_opciones_filtradas = {"TODOS": None}
-    for _, c in contratos_con_datos.iterrows():
+    for _, c in df_contratos_nombres.iterrows():
         contrato_opciones_filtradas[c['nombre']] = c['id']
     
     with col_f3:
@@ -219,9 +206,6 @@ with tab1:
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    periodos_str = "', '".join(periodos_seleccionados)
-    filtro_periodo = f"AND periodo IN ('{periodos_str}') AND tipo_reporte = 'CIERRE'"
-    
     if id_contrato is None:
         # ===== TODOS LOS CONTRATOS =====
         st.markdown("#### 📊 Resumen General de Todos los Contratos")
@@ -230,80 +214,70 @@ with tab1:
         total_ingresos_gral = 0
         total_egresos_gral = 0
         
-        for _, contrato in contratos_con_datos.iterrows():
+        for _, contrato in df_contratos_nombres.iterrows():
             id_contrato_tmp = contrato['id']
             nombre_contrato = contrato['nombre']
             
-            clientes_tmp = pd.read_sql(f"""
-                SELECT id, nombre, codigo 
-                FROM clientes 
-                WHERE id_contrato = {id_contrato_tmp} AND activo = 1
-            """, conn)
+            clientes_tmp = run_query("clientes", select="id, nombre, codigo",
+                                    filters={"id_contrato": id_contrato_tmp, "activo": 1})
             
             for _, cliente in clientes_tmp.iterrows():
                 id_cliente = cliente['id']
                 nombre_cliente = cliente['nombre']
                 codigo_cliente = cliente['codigo']
                 
-                df_liq = pd.read_sql(f"""
-                    SELECT 
-                        SUM(CASE WHEN id_concepto = -1 THEN monto_cobrar ELSE 0 END) as cpm_debo,
-                        SUM(CASE WHEN id_concepto = -1 THEN monto_gasto ELSE 0 END) as cpm_gasto,
-                        SUM(CASE WHEN id_concepto = -2 THEN monto_cobrar ELSE 0 END) as venta_debo,
-                        SUM(CASE WHEN id_concepto = -2 THEN monto_gasto ELSE 0 END) as venta_gasto,
-                        SUM(CASE WHEN id_concepto NOT IN (-1, -2) THEN monto_cobrar ELSE 0 END) as conceptos_debo,
-                        SUM(CASE WHEN id_concepto NOT IN (-1, -2) THEN monto_gasto ELSE 0 END) as conceptos_gasto,
-                        SUM(CASE WHEN id_concepto = -3 THEN monto_gasto ELSE 0 END) as afiladoras_gasto
-                    FROM liquidacion_real
-                    WHERE id_contrato = {id_contrato_tmp} 
-                      AND id_cliente = {id_cliente}
-                      AND periodo IN ('{periodos_str}')
-                """, conn)
+                # Verificar si existe liquidación real
+                df_liq_check = run_query("liquidacion_real",
+                                        select="id",
+                                        filters={"id_contrato": id_contrato_tmp, "id_cliente": id_cliente,
+                                                "periodo": periodos_seleccionados})
+                tiene_liquidacion = not df_liq_check.empty
                 
-                if not df_liq.empty and (df_liq.iloc[0].sum() > 0):
-                    cpm_debo = df_liq['cpm_debo'].iloc[0]
-                    cpm_gasto = df_liq['cpm_gasto'].iloc[0]
-                    venta_debo = df_liq['venta_debo'].iloc[0]
-                    venta_gasto = df_liq['venta_gasto'].iloc[0]
-                    conceptos_debo = df_liq['conceptos_debo'].iloc[0]
-                    conceptos_gasto = df_liq['conceptos_gasto'].iloc[0]
-                    afiladoras_gasto = df_liq['afiladoras_gasto'].iloc[0]
+                if tiene_liquidacion:
+                    df_liq = run_query("liquidacion_real",
+                                      select="id_concepto, monto_cobrar, monto_gasto",
+                                      filters={"id_contrato": id_contrato_tmp, "id_cliente": id_cliente,
+                                              "periodo": periodos_seleccionados})
+                    
+                    cpm_debo = df_liq[df_liq['id_concepto'] == -1]['monto_cobrar'].sum() if -1 in df_liq['id_concepto'].values else 0
+                    cpm_gasto = df_liq[df_liq['id_concepto'] == -1]['monto_gasto'].sum() if -1 in df_liq['id_concepto'].values else 0
+                    venta_debo = df_liq[df_liq['id_concepto'] == -2]['monto_cobrar'].sum() if -2 in df_liq['id_concepto'].values else 0
+                    venta_gasto = df_liq[df_liq['id_concepto'] == -2]['monto_gasto'].sum() if -2 in df_liq['id_concepto'].values else 0
+                    conceptos_debo = df_liq[(df_liq['id_concepto'] != -1) & (df_liq['id_concepto'] != -2) & (df_liq['id_concepto'] != -3)]['monto_cobrar'].sum()
+                    conceptos_gasto = df_liq[(df_liq['id_concepto'] != -1) & (df_liq['id_concepto'] != -2) & (df_liq['id_concepto'] != -3)]['monto_gasto'].sum()
+                    afiladoras_gasto = df_liq[df_liq['id_concepto'] == -3]['monto_gasto'].sum() if -3 in df_liq['id_concepto'].values else 0
                     
                     total_ingresos = cpm_debo + venta_debo + conceptos_debo
                     total_egresos = cpm_gasto + venta_gasto + conceptos_gasto + afiladoras_gasto
                     
                 else:
-                    df_cpm = pd.read_sql(f"""
-                        SELECT COALESCE(SUM(ingresos), 0) as ingresos, COALESCE(SUM(costos), 0) as costos
-                        FROM vw_general_semanal
-                        WHERE tipo = 'CPM' AND id_contrato = {id_contrato_tmp} AND id_cliente = {id_cliente} {filtro_periodo}
-                    """, conn)
+                    df_cpm = run_query("vw_general_semanal",
+                                      select="ingresos, costos",
+                                      filters={"tipo": "CPM", "id_contrato": id_contrato_tmp, "id_cliente": id_cliente,
+                                              "periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
                     
-                    df_venta = pd.read_sql(f"""
-                        SELECT COALESCE(SUM(ingresos), 0) as ingresos, COALESCE(SUM(costos), 0) as costos
-                        FROM vw_general_semanal
-                        WHERE tipo = 'VENTA' AND id_contrato = {id_contrato_tmp} AND id_cliente = {id_cliente} {filtro_periodo}
-                    """, conn)
+                    df_venta = run_query("vw_general_semanal",
+                                        select="ingresos, costos",
+                                        filters={"tipo": "VENTA", "id_contrato": id_contrato_tmp, "id_cliente": id_cliente,
+                                                "periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
                     
-                    df_afil = pd.read_sql(f"""
-                        SELECT COALESCE(SUM(otros_costos), 0) as total
-                        FROM vw_general_semanal
-                        WHERE tipo = 'AFILADORAS' AND id_contrato = {id_contrato_tmp} AND id_cliente = {id_cliente} {filtro_periodo}
-                    """, conn)
+                    df_afil = run_query("vw_general_semanal",
+                                       select="otros_costos",
+                                       filters={"tipo": "AFILADORAS", "id_contrato": id_contrato_tmp, "id_cliente": id_cliente,
+                                               "periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
                     
-                    df_conceptos = pd.read_sql(f"""
-                        SELECT 
-                            COALESCE(SUM(vd.monto_cobrar_default), 0) as debo,
-                            COALESCE(SUM(vd.monto_gasto_default), 0) as gasto
-                        FROM conceptos_gastos cg
-                        LEFT JOIN valores_por_defecto vd ON vd.id_concepto = cg.id 
-                            AND vd.id_contrato = {id_contrato_tmp} 
-                            AND vd.id_cliente = {id_cliente}
-                        WHERE cg.activo = 1
-                    """, conn)
+                    df_conceptos_def = run_query("valores_por_defecto",
+                                                select="monto_cobrar_default, monto_gasto_default",
+                                                filters={"id_contrato": id_contrato_tmp, "id_cliente": id_cliente})
                     
-                    total_ingresos = df_cpm['ingresos'].iloc[0] + df_venta['ingresos'].iloc[0] + df_conceptos['debo'].iloc[0]
-                    total_egresos = df_cpm['costos'].iloc[0] + df_venta['costos'].iloc[0] + df_afil['total'].iloc[0] + df_conceptos['gasto'].iloc[0]
+                    total_ingresos = (df_cpm['ingresos'].sum() if not df_cpm.empty else 0) + \
+                                    (df_venta['ingresos'].sum() if not df_venta.empty else 0) + \
+                                    (df_conceptos_def['monto_cobrar_default'].sum() if not df_conceptos_def.empty else 0)
+                    
+                    total_egresos = (df_cpm['costos'].sum() if not df_cpm.empty else 0) + \
+                                   (df_venta['costos'].sum() if not df_venta.empty else 0) + \
+                                   (df_afil['otros_costos'].sum() if not df_afil.empty else 0) + \
+                                   (df_conceptos_def['monto_gasto_default'].sum() if not df_conceptos_def.empty else 0)
                 
                 if total_ingresos > 0 or total_egresos > 0:
                     utilidad = total_ingresos - total_egresos
@@ -377,15 +351,13 @@ with tab1:
     
     else:
         # ===== CONTRATO ESPECÍFICO =====
-        info_contrato = pd.read_sql(f"SELECT nombre, tipo_operacion FROM contratos WHERE id = {id_contrato}", conn).iloc[0]
-        st.markdown(f"#### 📌 {info_contrato['nombre']} - {info_contrato['tipo_operacion']}")
+        info_contrato = run_query("contratos", select="nombre, tipo_operacion", filters={"id": id_contrato})
+        if not info_contrato.empty:
+            info_contrato = info_contrato.iloc[0]
+            st.markdown(f"#### 📌 {info_contrato['nombre']} - {info_contrato['tipo_operacion']}")
         
-        clientes = pd.read_sql(f"""
-            SELECT id, nombre, codigo 
-            FROM clientes 
-            WHERE id_contrato = {id_contrato} AND activo = 1
-            ORDER BY nombre
-        """, conn)
+        clientes = run_query("clientes", select="id, nombre, codigo",
+                            filters={"id_contrato": id_contrato, "activo": 1})
         
         if clientes.empty:
             st.warning("No hay clientes para este contrato")
@@ -399,24 +371,18 @@ with tab1:
                 codigo_cliente = cliente['codigo']
                 
                 # ===== VERIFICAR SI EXISTEN VALORES GUARDADOS =====
-                df_liq_check = pd.read_sql(f"""
-                    SELECT COUNT(*) as total
-                    FROM liquidacion_real
-                    WHERE id_contrato = {id_contrato} 
-                      AND id_cliente = {id_cliente}
-                      AND periodo IN ('{periodos_str}')
-                """, conn)
+                df_liq_check = run_query("liquidacion_real",
+                                        select="id",
+                                        filters={"id_contrato": id_contrato, "id_cliente": id_cliente,
+                                                "periodo": periodos_seleccionados})
                 
-                tiene_liquidacion = df_liq_check['total'].iloc[0] > 0
+                tiene_liquidacion = not df_liq_check.empty
                 
                 if tiene_liquidacion:
-                    df_liq = pd.read_sql(f"""
-                        SELECT id_concepto, monto_cobrar, monto_gasto
-                        FROM liquidacion_real
-                        WHERE id_contrato = {id_contrato} 
-                          AND id_cliente = {id_cliente}
-                          AND periodo IN ('{periodos_str}')
-                    """, conn)
+                    df_liq = run_query("liquidacion_real",
+                                      select="id_concepto, monto_cobrar, monto_gasto",
+                                      filters={"id_contrato": id_contrato, "id_cliente": id_cliente,
+                                              "periodo": periodos_seleccionados})
                     
                     cobrar_dict = {}
                     gasto_dict = {}
@@ -428,43 +394,42 @@ with tab1:
                     gasto_dict = {}
                 
                 # ===== VALORES POR DEFECTO =====
-                df_valores_defecto = pd.read_sql(f"""
-                    SELECT 
-                        cg.id as id_concepto,
-                        cg.concepto,
-                        COALESCE(vd.monto_cobrar_default, 0) as monto_cobrar_default,
-                        COALESCE(vd.monto_gasto_default, 0) as monto_gasto_default
-                    FROM conceptos_gastos cg
-                    LEFT JOIN valores_por_defecto vd ON vd.id_concepto = cg.id 
-                        AND vd.id_contrato = {id_contrato} 
-                        AND vd.id_cliente = {id_cliente}
-                    WHERE cg.activo = 1
-                    ORDER BY cg.concepto
-                """, conn)
+                df_valores_defecto = run_query("conceptos_gastos", select="id, concepto", filters={"activo": 1})
+                df_valores_defecto = df_valores_defecto.sort_values('concepto')
+                
+                # Agregar valores por defecto
+                for idx, row in df_valores_defecto.iterrows():
+                    df_valores_def = run_query("valores_por_defecto",
+                                              select="monto_cobrar_default, monto_gasto_default",
+                                              filters={"id_contrato": id_contrato, "id_cliente": id_cliente,
+                                                      "id_concepto": row['id']})
+                    if not df_valores_def.empty:
+                        df_valores_defecto.loc[idx, 'monto_cobrar_default'] = df_valores_def['monto_cobrar_default'].iloc[0]
+                        df_valores_defecto.loc[idx, 'monto_gasto_default'] = df_valores_def['monto_gasto_default'].iloc[0]
+                    else:
+                        df_valores_defecto.loc[idx, 'monto_cobrar_default'] = 0
+                        df_valores_defecto.loc[idx, 'monto_gasto_default'] = 0
                 
                 # ===== CPM, VENTA, AFILADORAS =====
-                df_cpm = pd.read_sql(f"""
-                    SELECT COALESCE(SUM(ingresos), 0) as ingresos, COALESCE(SUM(costos), 0) as costos
-                    FROM vw_general_semanal
-                    WHERE tipo = 'CPM' AND id_contrato = {id_contrato} AND id_cliente = {id_cliente} {filtro_periodo}
-                """, conn)
-                cpm_debo = df_cpm['ingresos'].iloc[0]
-                cpm_gasto = df_cpm['costos'].iloc[0]
+                df_cpm = run_query("vw_general_semanal",
+                                  select="ingresos, costos",
+                                  filters={"tipo": "CPM", "id_contrato": id_contrato, "id_cliente": id_cliente,
+                                          "periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
+                cpm_debo = df_cpm['ingresos'].sum() if not df_cpm.empty else 0
+                cpm_gasto = df_cpm['costos'].sum() if not df_cpm.empty else 0
                 
-                df_venta = pd.read_sql(f"""
-                    SELECT COALESCE(SUM(ingresos), 0) as ingresos, COALESCE(SUM(costos), 0) as costos
-                    FROM vw_general_semanal
-                    WHERE tipo = 'VENTA' AND id_contrato = {id_contrato} AND id_cliente = {id_cliente} {filtro_periodo}
-                """, conn)
-                venta_debo = df_venta['ingresos'].iloc[0]
-                venta_gasto = df_venta['costos'].iloc[0]
+                df_venta = run_query("vw_general_semanal",
+                                    select="ingresos, costos",
+                                    filters={"tipo": "VENTA", "id_contrato": id_contrato, "id_cliente": id_cliente,
+                                            "periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
+                venta_debo = df_venta['ingresos'].sum() if not df_venta.empty else 0
+                venta_gasto = df_venta['costos'].sum() if not df_venta.empty else 0
                 
-                df_afil = pd.read_sql(f"""
-                    SELECT COALESCE(SUM(otros_costos), 0) as total
-                    FROM vw_general_semanal
-                    WHERE tipo = 'AFILADORAS' AND id_contrato = {id_contrato} AND id_cliente = {id_cliente} {filtro_periodo}
-                """, conn)
-                afiladoras_gasto = df_afil['total'].iloc[0]
+                df_afil = run_query("vw_general_semanal",
+                                   select="otros_costos",
+                                   filters={"tipo": "AFILADORAS", "id_contrato": id_contrato, "id_cliente": id_cliente,
+                                           "periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
+                afiladoras_gasto = df_afil['otros_costos'].sum() if not df_afil.empty else 0
                 
                 with st.expander(f"👤 {nombre_cliente} ({codigo_cliente})", expanded=False):
                     
@@ -504,7 +469,7 @@ with tab1:
                     
                     # ===== OTROS CONCEPTOS - EDITABLES (solo si > 0) =====
                     for _, row in df_valores_defecto.iterrows():
-                        id_concepto = row['id_concepto']
+                        id_concepto = row['id']
                         concepto = row['concepto']
                         
                         debo = cobrar_dict.get(id_concepto, row['monto_cobrar_default'])
@@ -601,7 +566,7 @@ with tab1:
                         if any(r['es_editable'] for r in rows_tabla):
                             if st.button("💾 Guardar Cambios", key=f"res_guardar_{id_cliente}_{str(periodos_seleccionados)}"):
                                 try:
-                                    cursor = conn.cursor()
+                                    supabase = get_supabase()
                                     for row_item in rows_tabla:
                                         if row_item['es_editable']:
                                             id_concepto = row_item['id_concepto']
@@ -609,29 +574,24 @@ with tab1:
                                             nuevo_gasto = row_item['Gasto']
                                             
                                             for periodo in periodos_seleccionados:
-                                                cursor.execute("""
-                                                    SELECT id FROM liquidacion_real 
-                                                    WHERE id_contrato = ? AND id_cliente = ? 
-                                                    AND id_concepto = ? AND periodo = ?
-                                                """, (id_contrato, id_cliente, id_concepto, periodo))
+                                                existing = supabase.table('liquidacion_real').select('id').eq('id_contrato', id_contrato).eq('id_cliente', id_cliente).eq('id_concepto', id_concepto).eq('periodo', periodo).execute()
                                                 
-                                                existe = cursor.fetchone()
-                                                
-                                                if existe:
-                                                    cursor.execute("""
-                                                        UPDATE liquidacion_real 
-                                                        SET monto_cobrar = ?, monto_gasto = ?
-                                                        WHERE id_contrato = ? AND id_cliente = ? 
-                                                        AND id_concepto = ? AND periodo = ?
-                                                    """, (nuevo_debo, nuevo_gasto, id_contrato, id_cliente, id_concepto, periodo))
+                                                if existing.data:
+                                                    supabase.table('liquidacion_real').update({
+                                                        'monto_cobrar': nuevo_debo,
+                                                        'monto_gasto': nuevo_gasto
+                                                    }).eq('id_contrato', id_contrato).eq('id_cliente', id_cliente).eq('id_concepto', id_concepto).eq('periodo', periodo).execute()
                                                 else:
-                                                    cursor.execute("""
-                                                        INSERT INTO liquidacion_real 
-                                                        (id_contrato, id_cliente, id_concepto, periodo, monto_cobrar, monto_gasto)
-                                                        VALUES (?, ?, ?, ?, ?, ?)
-                                                    """, (id_contrato, id_cliente, id_concepto, periodo, nuevo_debo, nuevo_gasto))
+                                                    data = {
+                                                        'id_contrato': id_contrato,
+                                                        'id_cliente': id_cliente,
+                                                        'id_concepto': id_concepto,
+                                                        'periodo': periodo,
+                                                        'monto_cobrar': nuevo_debo,
+                                                        'monto_gasto': nuevo_gasto
+                                                    }
+                                                    supabase.table('liquidacion_real').insert(data).execute()
                                     
-                                    conn.commit()
                                     st.success(f"✅ Cambios guardados correctamente para {len(periodos_seleccionados)} período(s)")
                                     st.rerun()
                                 except Exception as e:
@@ -675,13 +635,11 @@ with tab2:
     
     with col_p1:
         # Obtener períodos disponibles (solo AVANCE)
-        periodos_proy = pd.read_sql("""
-            SELECT DISTINCT periodo 
-            FROM vw_general_semanal
-            WHERE tipo = 'CPM'
-              AND tipo_reporte = 'AVANCE'
-            ORDER BY periodo DESC
-        """, conn)['periodo'].tolist()
+        df_periodos_proy = run_query("vw_general_semanal",
+                                    select="periodo",
+                                    filters={"tipo": "CPM", "tipo_reporte": "AVANCE"})
+        periodos_proy = df_periodos_proy['periodo'].unique().tolist() if not df_periodos_proy.empty else []
+        periodos_proy.sort(reverse=True)
         
         if not periodos_proy:
             periodos_proy = [datetime.now().strftime("%Y-%m")]
@@ -694,18 +652,15 @@ with tab2:
     
     # ===== PASO 2: CONTRATOS QUE TIENEN DATOS EN ESE PERÍODO =====
     if periodo_proy:
-        contratos_con_datos_proy = pd.read_sql(f"""
-            SELECT DISTINCT c.id, c.nombre
-            FROM contratos c
-            INNER JOIN vw_general_semanal v ON c.id = v.id_contrato
-            WHERE v.periodo = '{periodo_proy}'
-              AND v.tipo = 'CPM'
-              AND v.tipo_reporte = 'AVANCE'
-              AND c.activo = 1
-            ORDER BY c.nombre
-        """, conn)
+        df_contratos_proy = run_query("vw_general_semanal",
+                                     select="id_contrato",
+                                     filters={"periodo": periodo_proy, "tipo": "CPM", "tipo_reporte": "AVANCE"})
+        ids_contratos_proy = df_contratos_proy['id_contrato'].unique().tolist() if not df_contratos_proy.empty else []
         
-        contratos_proy_opciones = [c['nombre'] for c in contratos_con_datos_proy.to_dict('records')]
+        df_contratos_nombres_proy = run_query("contratos", select="id, nombre", filters={"activo": 1})
+        df_contratos_nombres_proy = df_contratos_nombres_proy[df_contratos_nombres_proy['id'].isin(ids_contratos_proy)] if ids_contratos_proy else pd.DataFrame()
+        
+        contratos_proy_opciones = df_contratos_nombres_proy['nombre'].tolist()
         
         if not contratos_proy_opciones:
             st.warning(f"⚠️ No hay contratos con datos AVANCE en {periodo_proy}")
@@ -717,15 +672,11 @@ with tab2:
             contratos_proy_opciones,
             key="proy_contrato"
         )
-        id_proy_contrato = contratos_con_datos_proy[contratos_con_datos_proy['nombre'] == proy_contrato]['id'].iloc[0]
+        id_proy_contrato = df_contratos_nombres_proy[df_contratos_nombres_proy['nombre'] == proy_contrato]['id'].iloc[0]
     
     # ===== CLIENTES =====
-    proy_clientes = pd.read_sql(f"""
-        SELECT id, nombre, codigo 
-        FROM clientes 
-        WHERE id_contrato = {id_proy_contrato} AND activo = 1
-        ORDER BY nombre
-    """, conn)
+    proy_clientes = run_query("clientes", select="id, nombre, codigo",
+                             filters={"id_contrato": id_proy_contrato, "activo": 1})
     
     col_c1, col_c2 = st.columns(2)
     
@@ -758,289 +709,303 @@ with tab2:
         st.error("Período inválido")
         st.stop()
     
-    # ===== CONSTRUIR FILTROS =====
-    filtro_cliente = f"AND id_cliente = {id_proy_cliente}" if id_proy_cliente else ""
-    filtro_periodo = f"AND periodo = '{periodo_proy}' AND tipo_reporte = 'AVANCE'"
-    
     # ===== OBTENER DATOS DE PERFORACIÓN (metros) =====
-    query_perforacion = f"""
-        SELECT 
-            semana,
-            SUM(total_mp) as metros
-        FROM perforacion_general pg
-        JOIN perforacion_detalle pd ON pg.id = pd.id_perforacion_general
-        WHERE pg.id_contrato = {id_proy_contrato}
-          AND pg.periodo = '{periodo_proy}'
-          AND pg.tipo_operacion = 'CPM'
-          AND pg.tipo_reporte = 'AVANCE'
-          {filtro_cliente}
-        GROUP BY pg.semana
-        ORDER BY pg.semana
-    """
+    filtros_perf = {
+        "id_contrato": id_proy_contrato,
+        "periodo": periodo_proy,
+        "tipo_operacion": "CPM",
+        "tipo_reporte": "AVANCE"
+    }
+    if id_proy_cliente:
+        filtros_perf["id_cliente"] = id_proy_cliente
     
-    df_perf = pd.read_sql(query_perforacion, conn)
+    df_perforacion = run_query("perforacion_general", select="id, semana", filters=filtros_perf)
     
-    if df_perf.empty:
-        st.warning(f"No hay datos de AVANCE para {periodo_proy}")
-        st.info("Para proyectar se necesitan datos de AVANCE con fechas")
+    if not df_perforacion.empty:
+        ids_perforacion = df_perforacion['id'].tolist()
+        df_perf_detalle = run_query("perforacion_detalle", select="id_perforacion_general, total_mp",
+                                    filters={"id_perforacion_general": ids_perforacion})
+        
+        df_perf = df_perforacion.merge(df_perf_detalle, left_on='id', right_on='id_perforacion_general')
+        df_perf = df_perf.groupby('semana')['total_mp'].sum().reset_index()
+        df_perf.columns = ['semana', 'metros']
     else:
-        # ===== OBTENER COSTOS DE ACERO =====
-        query_costos = f"""
-            SELECT 
-                ag.semana,
-                SUM(ad.cantidad * ca.precio_rtperu) as costo_total
-            FROM acero_general ag
-            JOIN acero_detalle ad ON ag.id = ad.id_acero_general
-            LEFT JOIN costos ca ON ad.codigo = ca.codigo
-            WHERE ag.id_contrato = {id_proy_contrato}
-              AND ag.periodo = '{periodo_proy}'
-              AND ag.tipo_operacion = 'CPM'
-              AND ag.tipo_reporte = 'AVANCE'
-              {filtro_cliente}
-            GROUP BY ag.semana
-            ORDER BY ag.semana
-        """
+        df_perf = pd.DataFrame()
+    
+    # ===== OBTENER COSTOS DE ACERO =====
+    filtros_acero = {
+        "id_contrato": id_proy_contrato,
+        "periodo": periodo_proy,
+        "tipo_operacion": "CPM",
+        "tipo_reporte": "AVANCE"
+    }
+    if id_proy_cliente:
+        filtros_acero["id_cliente"] = id_proy_cliente
+    
+    df_acero = run_query("acero_general", select="id, semana", filters=filtros_acero)
+    
+    if not df_acero.empty:
+        ids_acero = df_acero['id'].tolist()
+        df_acero_detalle = run_query("acero_detalle", select="id_acero_general, codigo, cantidad",
+                                     filters={"id_acero_general": ids_acero})
         
-        df_costos = pd.read_sql(query_costos, conn)
+        # Obtener precios de costos
+        df_costos = run_query("costos", select="codigo, precio_rtperu")
+        costos_dict = dict(zip(df_costos['codigo'], df_costos['precio_rtperu'])) if not df_costos.empty else {}
         
-        # ===== OBTENER TARIFA POR METRO =====
-        try:
-            query_tarifa = f"""
-                SELECT tarifa
-                FROM tarifas
-                WHERE id_contrato = {id_proy_contrato}
-                  AND (id_cliente = {id_proy_cliente if id_proy_cliente else 'NULL'} OR id_cliente IS NULL)
-                  AND periodo_desde <= '{periodo_proy}'
-                  AND (periodo_hasta >= '{periodo_proy}' OR periodo_hasta IS NULL)
-                ORDER BY id_cliente DESC
-                LIMIT 1
-            """
-            df_tarifa = pd.read_sql(query_tarifa, conn)
-            tarifa_por_metro = df_tarifa['tarifa'].iloc[0] if not df_tarifa.empty else 0
-        except:
-            tarifa_por_metro = 0
+        df_acero_detalle['costo_total'] = df_acero_detalle.apply(
+            lambda row: row['cantidad'] * costos_dict.get(row['codigo'], 0), axis=1
+        )
         
-        # ===== OBTENER FECHAS POR SEMANA =====
-        query_fechas = f"""
-            SELECT 
-                semana,
-                MIN(fecha_inicio) as fecha_inicio,
-                MAX(fecha_fin) as fecha_fin
-            FROM perforacion_general
-            WHERE id_contrato = {id_proy_contrato}
-              AND periodo = '{periodo_proy}'
-              AND tipo_operacion = 'CPM'
-              AND tipo_reporte = 'AVANCE'
-              AND fecha_inicio IS NOT NULL
-              AND fecha_fin IS NOT NULL
-              {filtro_cliente}
-            GROUP BY semana
-            ORDER BY semana
-        """
-        df_fechas = pd.read_sql(query_fechas, conn)
+        df_costos_agg = df_acero_detalle.groupby('id_acero_general')['costo_total'].sum().reset_index()
+        df_costos_agg = df_costos_agg.merge(df_acero[['id', 'semana']], left_on='id_acero_general', right_on='id')
         
-        # ===== CREAR DICCIONARIOS =====
-        metros_dict = {}
-        for _, row in df_perf.iterrows():
-            metros_dict[row['semana']] = row['metros']
+        df_costos_agg = df_costos_agg.groupby('semana')['costo_total'].sum().reset_index()
+        df_costos_agg.columns = ['semana', 'costo_total']
+        df_costos = df_costos_agg
+    else:
+        df_costos = pd.DataFrame()
+    
+    # ===== OBTENER TARIFA POR METRO =====
+    try:
+        filtros_tarifa = {
+            "id_contrato": id_proy_contrato,
+            "periodo_desde": {"lte": periodo_proy}
+        }
+        if id_proy_cliente:
+            filtros_tarifa["id_cliente"] = id_proy_cliente
         
-        costos_dict = {}
-        for _, row in df_costos.iterrows():
-            costos_dict[row['semana']] = row['costo_total']
+        df_tarifa = run_query("tarifas", select="tarifa", filters=filtros_tarifa)
         
-        fechas_dict = {}
-        for _, row in df_fechas.iterrows():
-            fechas_dict[row['semana']] = {
-                'inicio': pd.to_datetime(row['fecha_inicio']).date(),
-                'fin': pd.to_datetime(row['fecha_fin']).date()
-            }
+        # Filtrar por periodo_hasta
+        if not df_tarifa.empty:
+            df_tarifa = df_tarifa[df_tarifa['periodo_hasta'].isna() | (df_tarifa['periodo_hasta'] >= periodo_proy)]
         
-        # ===== OBTENER SEMANAS DISPONIBLES =====
-        semanas_disponibles = sorted(set(metros_dict.keys()) | set(costos_dict.keys()))
+        tarifa_por_metro = df_tarifa['tarifa'].iloc[0] if not df_tarifa.empty else 0
+    except:
+        tarifa_por_metro = 0
+    
+    # ===== OBTENER FECHAS POR SEMANA =====
+    filtros_fechas = {
+        "id_contrato": id_proy_contrato,
+        "periodo": periodo_proy,
+        "tipo_operacion": "CPM",
+        "tipo_reporte": "AVANCE"
+    }
+    if id_proy_cliente:
+        filtros_fechas["id_cliente"] = id_proy_cliente
+    
+    df_fechas = run_query("perforacion_general", select="semana, fecha_inicio, fecha_fin", filters=filtros_fechas)
+    if not df_fechas.empty:
+        df_fechas = df_fechas.dropna(subset=['fecha_inicio', 'fecha_fin'])
+        df_fechas = df_fechas.groupby('semana').agg({
+            'fecha_inicio': 'min',
+            'fecha_fin': 'max'
+        }).reset_index()
+    
+    # ===== CREAR DICCIONARIOS =====
+    metros_dict = {}
+    for _, row in df_perf.iterrows():
+        metros_dict[row['semana']] = row['metros']
+    
+    costos_dict = {}
+    for _, row in df_costos.iterrows():
+        costos_dict[row['semana']] = row['costo_total']
+    
+    fechas_dict = {}
+    for _, row in df_fechas.iterrows():
+        fechas_dict[row['semana']] = {
+            'inicio': pd.to_datetime(row['fecha_inicio']).date() if row['fecha_inicio'] else None,
+            'fin': pd.to_datetime(row['fecha_fin']).date() if row['fecha_fin'] else None
+        }
+    
+    # ===== OBTENER SEMANAS DISPONIBLES =====
+    semanas_disponibles = sorted(set(metros_dict.keys()) | set(costos_dict.keys()))
+    
+    if not semanas_disponibles:
+        st.warning("No hay datos disponibles para la proyección")
+    else:
+        # ===== CALCULAR PROYECCIÓN =====
+        datos_semanales = []
+        metros_acum = 0
+        costo_acum = 0
+        dias_acum = 0
+        ultima_fecha_fin = None
         
-        if not semanas_disponibles:
-            st.warning("No hay datos disponibles para la proyección")
-        else:
-            # ===== CALCULAR PROYECCIÓN =====
-            datos_semanales = []
-            metros_acum = 0
-            costo_acum = 0
-            dias_acum = 0
-            ultima_fecha_fin = None
+        for semana in sorted(semanas_disponibles):
+            metros_semana = metros_dict.get(semana, 0)
+            costo_semana = costos_dict.get(semana, 0)
             
-            for semana in sorted(semanas_disponibles):
-                metros_semana = metros_dict.get(semana, 0)
-                costo_semana = costos_dict.get(semana, 0)
+            # Obtener fechas de la semana
+            if semana in fechas_dict and fechas_dict[semana]['inicio'] and fechas_dict[semana]['fin']:
+                fecha_inicio = fechas_dict[semana]['inicio']
+                fecha_fin = fechas_dict[semana]['fin']
                 
-                # Obtener fechas de la semana
-                if semana in fechas_dict:
-                    fecha_inicio = fechas_dict[semana]['inicio']
-                    fecha_fin = fechas_dict[semana]['fin']
-                    
-                    if ultima_fecha_fin is None:
-                        dias_semana = (fecha_fin - fecha_inicio).days + 1
-                        dias_acum = dias_semana
-                    else:
-                        dias_semana = (fecha_fin - ultima_fecha_fin).days
-                        dias_acum += dias_semana
-                    
-                    ultima_fecha_fin = fecha_fin
+                if ultima_fecha_fin is None:
+                    dias_semana = (fecha_fin - fecha_inicio).days + 1
+                    dias_acum = dias_semana
                 else:
-                    dias_semana = 7
+                    dias_semana = (fecha_fin - ultima_fecha_fin).days
                     dias_acum += dias_semana
                 
-                metros_acum += metros_semana
-                costo_acum += costo_semana
-                ingreso_acum = metros_acum * tarifa_por_metro
-                ganancia_acum = ingreso_acum - costo_acum
-                margen_acum = (ganancia_acum / ingreso_acum * 100) if ingreso_acum > 0 else 0
+                ultima_fecha_fin = fecha_fin
+            else:
+                dias_semana = 7
+                dias_acum += dias_semana
+            
+            metros_acum += metros_semana
+            costo_acum += costo_semana
+            ingreso_acum = metros_acum * tarifa_por_metro
+            ganancia_acum = ingreso_acum - costo_acum
+            margen_acum = (ganancia_acum / ingreso_acum * 100) if ingreso_acum > 0 else 0
+            
+            dias_restantes = dias_totales_mes - dias_acum
+            
+            if dias_acum > 0 and dias_restantes > 0:
+                rendimiento_diario = metros_acum / dias_acum
+                costo_diario = costo_acum / dias_acum
                 
-                dias_restantes = dias_totales_mes - dias_acum
-                
-                if dias_acum > 0 and dias_restantes > 0:
-                    rendimiento_diario = metros_acum / dias_acum
-                    costo_diario = costo_acum / dias_acum
-                    
-                    metros_proy = metros_acum + (rendimiento_diario * dias_restantes)
-                    costo_proy = costo_acum + (costo_diario * dias_restantes)
-                    ingreso_proy = metros_proy * tarifa_por_metro
-                    ganancia_proy = ingreso_proy - costo_proy
-                    margen_proy = (ganancia_proy / ingreso_proy * 100) if ingreso_proy > 0 else 0
-                else:
-                    metros_proy = metros_acum
-                    costo_proy = costo_acum
-                    ingreso_proy = ingreso_acum
-                    ganancia_proy = ganancia_acum
-                    margen_proy = margen_acum
-                
-                datos_semanales.append({
-                    'Semana': semana,
-                    'Metros': metros_acum,
-                    'Ingresos': ingreso_acum,
-                    'Costos': costo_acum,
-                    'Ganancia': ganancia_acum,
-                    'Margen %': margen_acum,
-                    'Metros_Proy': metros_proy,
-                    'Ingresos_Proy': ingreso_proy,
-                    'Costos_Proy': costo_proy,
-                    'Ganancia_Proy': ganancia_proy,
-                    'Margen_Proy_%': margen_proy
-                })
+                metros_proy = metros_acum + (rendimiento_diario * dias_restantes)
+                costo_proy = costo_acum + (costo_diario * dias_restantes)
+                ingreso_proy = metros_proy * tarifa_por_metro
+                ganancia_proy = ingreso_proy - costo_proy
+                margen_proy = (ganancia_proy / ingreso_proy * 100) if ingreso_proy > 0 else 0
+            else:
+                metros_proy = metros_acum
+                costo_proy = costo_acum
+                ingreso_proy = ingreso_acum
+                ganancia_proy = ganancia_acum
+                margen_proy = margen_acum
             
-            # ===== MOSTRAR TABLA =====
-            st.markdown("#### 📋 Proyección por Semana")
-            
-            df_show = pd.DataFrame(datos_semanales)
-            
-            df_formateado = df_show[['Semana', 'Ingresos', 'Costos', 'Ganancia', 'Margen %', 
-                                      'Ingresos_Proy', 'Costos_Proy', 'Ganancia_Proy', 'Margen_Proy_%']].copy()
-            
-            for col in ['Ingresos', 'Costos', 'Ganancia', 'Ingresos_Proy', 'Costos_Proy', 'Ganancia_Proy']:
-                df_formateado[col] = df_formateado[col].apply(lambda x: f"${x:,.0f}")
-            
-            df_formateado['Margen %'] = df_formateado['Margen %'].apply(lambda x: f"{x:.1f}%")
-            df_formateado['Margen_Proy_%'] = df_formateado['Margen_Proy_%'].apply(lambda x: f"{x:.1f}%")
-            
-            df_formateado.columns = ['Sem', 'Ingresos', 'Costos', 'Ganancia', 'Margen',
-                                      'Ingresos Proy', 'Costos Proy', 'Ganancia Proy', 'Margen Proy']
-            
-            st.dataframe(
-                df_formateado.style.set_properties(**{
-                    'text-align': 'center',
-                    'border': '1px solid #e5e7eb',
-                    'padding': '8px'
-                }).set_table_styles([
-                    {'selector': 'th', 'props': [('text-align', 'center'), ('background-color', '#f3f4f6'), ('color', '#374151'), ('font-weight', '600')]}
-                ]),
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # ===== GRÁFICO DE EVOLUCIÓN =====
-            st.markdown("#### 📊 Evolución: Actual vs Proyectado")
-            
-            semanas_labels = [f"S{int(s)}" for s in df_show['Semana']]
-            semanas_labels.append('Proy')
-            
-            ingresos_vals = list(df_show['Ingresos']) + [df_show['Ingresos_Proy'].iloc[-1]]
-            costos_vals = list(df_show['Costos']) + [df_show['Costos_Proy'].iloc[-1]]
-            ganancia_vals = list(df_show['Ganancia']) + [df_show['Ganancia_Proy'].iloc[-1]]
-            
-            fig = go.Figure()
-            
-            fig.add_trace(go.Scatter(
-                x=semanas_labels,
-                y=ingresos_vals,
-                mode='lines+markers',
-                name='Ingresos',
-                line=dict(color='#1152d4', width=3),
-                marker=dict(size=8)
-            ))
-            
-            fig.add_trace(go.Scatter(
-                x=semanas_labels,
-                y=costos_vals,
-                mode='lines+markers',
-                name='Costos',
-                line=dict(color='#ef4444', width=3),
-                marker=dict(size=8)
-            ))
-            
-            fig.add_trace(go.Scatter(
-                x=semanas_labels,
-                y=ganancia_vals,
-                mode='lines+markers',
-                name='Ganancia',
-                line=dict(color='#10b981', width=3),
-                marker=dict(size=8)
-            ))
-            
-            fig.update_layout(
-                title=f"Proyección {periodo_proy} - {proy_contrato}",
-                xaxis_title="Semana",
-                yaxis_title="Monto ($)",
-                height=450,
-                hovermode='x unified'
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # ===== RESUMEN FINAL =====
-            st.markdown("#### 🎯 Resumen Proyectado a Fin de Mes")
-            
-            ultimo = datos_semanales[-1]
-            
-            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
-            with col_r1:
-                with st.container(border=True):
-                    st.markdown("<div style='text-align: center;'>💰 Ingresos</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700;'>${ultimo['Ingresos_Proy']:,.0f}</div>", unsafe_allow_html=True)
-            with col_r2:
-                with st.container(border=True):
-                    st.markdown("<div style='text-align: center;'>💸 Costos</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700;'>${ultimo['Costos_Proy']:,.0f}</div>", unsafe_allow_html=True)
-            with col_r3:
-                with st.container(border=True):
-                    st.markdown("<div style='text-align: center;'>📊 Ganancia</div>", unsafe_allow_html=True)
-                    color = "#10b981" if ultimo['Ganancia_Proy'] > 0 else "#ef4444"
-                    st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700; color: {color};'>${ultimo['Ganancia_Proy']:,.0f}</div>", unsafe_allow_html=True)
-            with col_r4:
-                with st.container(border=True):
-                    st.markdown("<div style='text-align: center;'>🎯 Margen</div>", unsafe_allow_html=True)
-                    color = "#10b981" if ultimo['Margen_Proy_%'] >= 42 else "#f59e0b" if ultimo['Margen_Proy_%'] >= 30 else "#ef4444"
-                    st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700; color: {color};'>{ultimo['Margen_Proy_%']:.1f}%</div>", unsafe_allow_html=True)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-            with col_m1:
-                st.metric("Metros Proyectados", f"{ultimo['Metros_Proy']:,.0f} m")
-            with col_m2:
-                st.metric("Tarifa por Metro", f"${tarifa_por_metro:,.2f}")
-            with col_m3:
-                st.metric("Días Restantes", f"{dias_restantes} días")
-            with col_m4:
-                st.metric("Rendimiento Diario", f"{rendimiento_diario:.1f} m/día")
-
+            datos_semanales.append({
+                'Semana': semana,
+                'Metros': metros_acum,
+                'Ingresos': ingreso_acum,
+                'Costos': costo_acum,
+                'Ganancia': ganancia_acum,
+                'Margen %': margen_acum,
+                'Metros_Proy': metros_proy,
+                'Ingresos_Proy': ingreso_proy,
+                'Costos_Proy': costo_proy,
+                'Ganancia_Proy': ganancia_proy,
+                'Margen_Proy_%': margen_proy
+            })
+        
+        # ===== MOSTRAR TABLA =====
+        st.markdown("#### 📋 Proyección por Semana")
+        
+        df_show = pd.DataFrame(datos_semanales)
+        
+        df_formateado = df_show[['Semana', 'Ingresos', 'Costos', 'Ganancia', 'Margen %', 
+                                  'Ingresos_Proy', 'Costos_Proy', 'Ganancia_Proy', 'Margen_Proy_%']].copy()
+        
+        for col in ['Ingresos', 'Costos', 'Ganancia', 'Ingresos_Proy', 'Costos_Proy', 'Ganancia_Proy']:
+            df_formateado[col] = df_formateado[col].apply(lambda x: f"${x:,.0f}")
+        
+        df_formateado['Margen %'] = df_formateado['Margen %'].apply(lambda x: f"{x:.1f}%")
+        df_formateado['Margen_Proy_%'] = df_formateado['Margen_Proy_%'].apply(lambda x: f"{x:.1f}%")
+        
+        df_formateado.columns = ['Sem', 'Ingresos', 'Costos', 'Ganancia', 'Margen',
+                                  'Ingresos Proy', 'Costos Proy', 'Ganancia Proy', 'Margen Proy']
+        
+        st.dataframe(
+            df_formateado.style.set_properties(**{
+                'text-align': 'center',
+                'border': '1px solid #e5e7eb',
+                'padding': '8px'
+            }).set_table_styles([
+                {'selector': 'th', 'props': [('text-align', 'center'), ('background-color', '#f3f4f6'), ('color', '#374151'), ('font-weight', '600')]}
+            ]),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # ===== GRÁFICO DE EVOLUCIÓN =====
+        st.markdown("#### 📊 Evolución: Actual vs Proyectado")
+        
+        semanas_labels = [f"S{int(s)}" for s in df_show['Semana']]
+        semanas_labels.append('Proy')
+        
+        ingresos_vals = list(df_show['Ingresos']) + [df_show['Ingresos_Proy'].iloc[-1]]
+        costos_vals = list(df_show['Costos']) + [df_show['Costos_Proy'].iloc[-1]]
+        ganancia_vals = list(df_show['Ganancia']) + [df_show['Ganancia_Proy'].iloc[-1]]
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=semanas_labels,
+            y=ingresos_vals,
+            mode='lines+markers',
+            name='Ingresos',
+            line=dict(color='#1152d4', width=3),
+            marker=dict(size=8)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=semanas_labels,
+            y=costos_vals,
+            mode='lines+markers',
+            name='Costos',
+            line=dict(color='#ef4444', width=3),
+            marker=dict(size=8)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=semanas_labels,
+            y=ganancia_vals,
+            mode='lines+markers',
+            name='Ganancia',
+            line=dict(color='#10b981', width=3),
+            marker=dict(size=8)
+        ))
+        
+        fig.update_layout(
+            title=f"Proyección {periodo_proy} - {proy_contrato}",
+            xaxis_title="Semana",
+            yaxis_title="Monto ($)",
+            height=450,
+            hovermode='x unified'
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # ===== RESUMEN FINAL =====
+        st.markdown("#### 🎯 Resumen Proyectado a Fin de Mes")
+        
+        ultimo = datos_semanales[-1]
+        dias_restantes = dias_totales_mes - dias_acum if 'dias_acum' in locals() else 0
+        rendimiento_diario = (metros_acum / dias_acum) if 'dias_acum' in locals() and dias_acum > 0 else 0
+        
+        col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+        with col_r1:
+            with st.container(border=True):
+                st.markdown("<div style='text-align: center;'>💰 Ingresos</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700;'>${ultimo['Ingresos_Proy']:,.0f}</div>", unsafe_allow_html=True)
+        with col_r2:
+            with st.container(border=True):
+                st.markdown("<div style='text-align: center;'>💸 Costos</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700;'>${ultimo['Costos_Proy']:,.0f}</div>", unsafe_allow_html=True)
+        with col_r3:
+            with st.container(border=True):
+                st.markdown("<div style='text-align: center;'>📊 Ganancia</div>", unsafe_allow_html=True)
+                color = "#10b981" if ultimo['Ganancia_Proy'] > 0 else "#ef4444"
+                st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700; color: {color};'>${ultimo['Ganancia_Proy']:,.0f}</div>", unsafe_allow_html=True)
+        with col_r4:
+            with st.container(border=True):
+                st.markdown("<div style='text-align: center;'>🎯 Margen</div>", unsafe_allow_html=True)
+                color = "#10b981" if ultimo['Margen_Proy_%'] >= 42 else "#f59e0b" if ultimo['Margen_Proy_%'] >= 30 else "#ef4444"
+                st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700; color: {color};'>{ultimo['Margen_Proy_%']:.1f}%</div>", unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        with col_m1:
+            st.metric("Metros Proyectados", f"{ultimo['Metros_Proy']:,.0f} m")
+        with col_m2:
+            st.metric("Tarifa por Metro", f"${tarifa_por_metro:,.2f}")
+        with col_m3:
+            st.metric("Días Restantes", f"{dias_restantes} días")
+        with col_m4:
+            st.metric("Rendimiento Diario", f"{rendimiento_diario:.1f} m/día")
 
 with tab3:
     st.markdown("### 💵 Liquidación")
@@ -1050,12 +1015,12 @@ with tab3:
     col_l1, col_l2, col_l3, col_l4 = st.columns([2, 2, 2, 1])
     
     with col_l1:
-        años = pd.read_sql("""
-            SELECT DISTINCT substr(periodo, 1, 4) as año 
-            FROM vw_general_semanal
-            WHERE tipo_reporte = 'CIERRE'
-            ORDER BY año DESC
-        """, conn)['año'].tolist()
+        df_años = run_query("vw_general_semanal", select="periodo", filters={"tipo_reporte": "CIERRE"})
+        if not df_años.empty:
+            df_años['año'] = df_años['periodo'].str[:4]
+            años = sorted(df_años['año'].unique(), reverse=True)
+        else:
+            años = [datetime.now().strftime("%Y")]
         
         año_liquidacion = st.selectbox(
             "📅 Año",
@@ -1064,13 +1029,11 @@ with tab3:
         )
     
     with col_l2:
-        periodos_liq = pd.read_sql(f"""
-            SELECT DISTINCT periodo 
-            FROM vw_general_semanal
-            WHERE periodo LIKE '{año_liquidacion}-%'
-              AND tipo_reporte = 'CIERRE'
-            ORDER BY periodo
-        """, conn)['periodo'].tolist()
+        df_periodos_liq = run_query("vw_general_semanal",
+                                    select="periodo",
+                                    filters={"periodo": f"{año_liquidacion}-%", "tipo_reporte": "CIERRE"})
+        periodos_liq = df_periodos_liq['periodo'].unique().tolist() if not df_periodos_liq.empty else []
+        periodos_liq.sort()
         
         opciones_periodo_liq = ["TODOS"] + periodos_liq
         periodo_liq = st.selectbox("📅 Período", opciones_periodo_liq, key="liq_periodo")
@@ -1102,20 +1065,14 @@ with tab3:
         st.info("La liquidación requiere un contrato específico para poder editar los montos pagados.")
         st.stop()
     
-    # ===== CONSTRUIR FILTROS =====
-    filtro_periodo_liq = f"AND periodo = '{periodo_liq}' AND tipo_reporte = 'CIERRE'"
-    
     # ===== INFORMACIÓN DEL CONTRATO =====
-    info_contrato_liq = pd.read_sql(f"SELECT nombre FROM contratos WHERE id = {id_contrato_liq}", conn).iloc[0]
-    st.markdown(f"#### 📌 {info_contrato_liq['nombre']} - Período: {periodo_liq}")
+    info_contrato_liq = run_query("contratos", select="nombre", filters={"id": id_contrato_liq})
+    if not info_contrato_liq.empty:
+        st.markdown(f"#### 📌 {info_contrato_liq['nombre'].iloc[0]} - Período: {periodo_liq}")
     
     # ===== CLIENTES =====
-    clientes_liq = pd.read_sql(f"""
-        SELECT id, nombre, codigo 
-        FROM clientes 
-        WHERE id_contrato = {id_contrato_liq} AND activo = 1
-        ORDER BY nombre
-    """, conn)
+    clientes_liq = run_query("clientes", select="id, nombre, codigo",
+                            filters={"id_contrato": id_contrato_liq, "activo": 1})
     
     if clientes_liq.empty:
         st.warning("No hay clientes para este contrato")
@@ -1134,49 +1091,44 @@ with tab3:
         with st.expander(f"👤 {nombre_cliente} ({codigo_cliente})", expanded=False):
             
             # ===== OBTENER VALORIZACIÓN MINA (de vw_general_semanal) =====
-            df_cpm_liq = pd.read_sql(f"""
-                SELECT COALESCE(SUM(ingresos), 0) as total
-                FROM vw_general_semanal
-                WHERE tipo = 'CPM'
-                  AND id_contrato = {id_contrato_liq}
-                  AND id_cliente = {id_cliente}
-                  {filtro_periodo_liq}
-            """, conn)
-            debo_cpm = df_cpm_liq['total'].iloc[0]
+            df_cpm_liq = run_query("vw_general_semanal",
+                                  select="ingresos",
+                                  filters={"tipo": "CPM", "id_contrato": id_contrato_liq,
+                                          "id_cliente": id_cliente, "periodo": periodo_liq,
+                                          "tipo_reporte": "CIERRE"})
+            debo_cpm = df_cpm_liq['ingresos'].sum() if not df_cpm_liq.empty else 0
             
-            df_venta_liq = pd.read_sql(f"""
-                SELECT COALESCE(SUM(ingresos), 0) as total
-                FROM vw_general_semanal
-                WHERE tipo = 'VENTA'
-                  AND id_contrato = {id_contrato_liq}
-                  AND id_cliente = {id_cliente}
-                  {filtro_periodo_liq}
-            """, conn)
-            debo_venta = df_venta_liq['total'].iloc[0]
+            df_venta_liq = run_query("vw_general_semanal",
+                                    select="ingresos",
+                                    filters={"tipo": "VENTA", "id_contrato": id_contrato_liq,
+                                            "id_cliente": id_cliente, "periodo": periodo_liq,
+                                            "tipo_reporte": "CIERRE"})
+            debo_venta = df_venta_liq['ingresos'].sum() if not df_venta_liq.empty else 0
             
             # ===== VALORES POR DEFECTO DE CONCEPTOS (solo los que tienen valor > 0) =====
-            df_conceptos_liq = pd.read_sql(f"""
-                SELECT 
-                    cg.id as id_concepto,
-                    cg.concepto,
-                    COALESCE(vd.monto_cobrar_default, 0) as debo_default
-                FROM conceptos_gastos cg
-                LEFT JOIN valores_por_defecto vd ON vd.id_concepto = cg.id 
-                    AND vd.id_contrato = {id_contrato_liq} 
-                    AND vd.id_cliente = {id_cliente}
-                WHERE cg.activo = 1
-                  AND COALESCE(vd.monto_cobrar_default, 0) > 0
-                ORDER BY cg.concepto
-            """, conn)
+            df_conceptos_liq = run_query("conceptos_gastos", select="id, concepto", filters={"activo": 1})
+            
+            # Agregar valores por defecto
+            conceptos_con_valor = []
+            for _, row in df_conceptos_liq.iterrows():
+                df_valores_def = run_query("valores_por_defecto",
+                                          select="monto_cobrar_default",
+                                          filters={"id_contrato": id_contrato_liq, "id_cliente": id_cliente,
+                                                  "id_concepto": row['id']})
+                debo_default = df_valores_def['monto_cobrar_default'].iloc[0] if not df_valores_def.empty else 0
+                
+                if debo_default > 0:
+                    conceptos_con_valor.append({
+                        'id_concepto': row['id'],
+                        'concepto': row['concepto'],
+                        'debo_default': debo_default
+                    })
             
             # ===== VALORES REALES PAGADOS (HES/LIQUIDACIÓN) =====
-            df_pagado_real = pd.read_sql(f"""
-                SELECT id_concepto, monto_cobrado
-                FROM liquidacion_real
-                WHERE id_contrato = {id_contrato_liq} 
-                  AND id_cliente = {id_cliente}
-                  AND periodo = '{periodo_liq}'
-            """, conn)
+            df_pagado_real = run_query("liquidacion_real",
+                                      select="id_concepto, monto_cobrado",
+                                      filters={"id_contrato": id_contrato_liq, "id_cliente": id_cliente,
+                                              "periodo": periodo_liq})
             
             pagado_dict = {}
             for _, row in df_pagado_real.iterrows():
@@ -1204,17 +1156,13 @@ with tab3:
                 })
             
             # Conceptos dinámicos
-            for _, row in df_conceptos_liq.iterrows():
-                id_concepto = row['id_concepto']
-                debo = row['debo_default']
-                
-                if debo > 0:
-                    rows_liq.append({
-                        'Concepto': row['concepto'].upper(),
-                        'Valorizacion Mina': debo,
-                        'HES/Liquidacion': pagado_dict.get(id_concepto, 0),
-                        'id_concepto': id_concepto
-                    })
+            for concepto in conceptos_con_valor:
+                rows_liq.append({
+                    'Concepto': concepto['concepto'].upper(),
+                    'Valorizacion Mina': concepto['debo_default'],
+                    'HES/Liquidacion': pagado_dict.get(concepto['id_concepto'], 0),
+                    'id_concepto': concepto['id_concepto']
+                })
             
             if not rows_liq:
                 st.info("No hay conceptos con valores para este cliente")
@@ -1343,37 +1291,30 @@ with tab3:
             with col_btn1:
                 if st.button("💾 Guardar Liquidación", key=f"guardar_liq_{id_cliente}_{periodo_liq}", use_container_width=True):
                     try:
-                        cursor = conn.cursor()
+                        supabase = get_supabase()
                         guardados = 0
                         
                         for row_item in rows_liq:
                             id_concepto = row_item['id_concepto']
                             hes = row_item['HES/Liquidacion']
                             
-                            cursor.execute("""
-                                SELECT id FROM liquidacion_real 
-                                WHERE id_contrato = ? AND id_cliente = ? 
-                                  AND id_concepto = ? AND periodo = ?
-                            """, (id_contrato_liq, id_cliente, id_concepto, periodo_liq))
+                            existing = supabase.table('liquidacion_real').select('id').eq('id_contrato', id_contrato_liq).eq('id_cliente', id_cliente).eq('id_concepto', id_concepto).eq('periodo', periodo_liq).execute()
                             
-                            existe = cursor.fetchone()
-                            
-                            if existe:
-                                cursor.execute("""
-                                    UPDATE liquidacion_real 
-                                    SET monto_cobrado = ?
-                                    WHERE id_contrato = ? AND id_cliente = ? 
-                                      AND id_concepto = ? AND periodo = ?
-                                """, (hes, id_contrato_liq, id_cliente, id_concepto, periodo_liq))
+                            if existing.data:
+                                supabase.table('liquidacion_real').update({
+                                    'monto_cobrado': hes
+                                }).eq('id_contrato', id_contrato_liq).eq('id_cliente', id_cliente).eq('id_concepto', id_concepto).eq('periodo', periodo_liq).execute()
                             else:
-                                cursor.execute("""
-                                    INSERT INTO liquidacion_real 
-                                    (id_contrato, id_cliente, id_concepto, periodo, monto_cobrado)
-                                    VALUES (?, ?, ?, ?, ?)
-                                """, (id_contrato_liq, id_cliente, id_concepto, periodo_liq, hes))
+                                data = {
+                                    'id_contrato': id_contrato_liq,
+                                    'id_cliente': id_cliente,
+                                    'id_concepto': id_concepto,
+                                    'periodo': periodo_liq,
+                                    'monto_cobrado': hes
+                                }
+                                supabase.table('liquidacion_real').insert(data).execute()
                             guardados += 1
                         
-                        conn.commit()
                         st.success(f"✅ {guardados} registros guardados correctamente")
                         st.balloons()
                         st.rerun()

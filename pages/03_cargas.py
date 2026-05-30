@@ -4,7 +4,7 @@ import os
 import tempfile
 import re
 from datetime import datetime
-from database.conexion import get_connection
+from database.conexion import run_query, get_supabase, run_delete, run_insert
 from utils.cargador_excel import cargar_excel, obtener_contrato, obtener_cliente, detectar_encabezados_cliente
 
 # Configuración de la página
@@ -57,8 +57,6 @@ if 'autenticado' not in st.session_state or not st.session_state['autenticado']:
 
 if 'usuario' not in st.session_state:
     st.session_state['usuario'] = 'Admin'
-
-conn = get_connection()
 
 # ============================================================================
 # HEADER CON NAVEGACIÓN
@@ -133,11 +131,9 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ============================================================================
 # OBTENER PERÍODOS DISPONIBLES PARA FILTROS
 # ============================================================================
-periodos_disponibles = pd.read_sql("""
-    SELECT DISTINCT periodo 
-    FROM control_cargas 
-    ORDER BY periodo DESC
-""", conn)['periodo'].tolist()
+df_periodos = run_query("control_cargas", select="periodo")
+periodos_disponibles = df_periodos['periodo'].unique().tolist() if not df_periodos.empty else []
+periodos_disponibles.sort(reverse=True)
 
 if not periodos_disponibles:
     periodos_disponibles = [datetime.now().strftime("%Y-%m")]
@@ -273,24 +269,22 @@ with tab1:
     # Tabla de reportes cargados por período
     st.markdown(f"#### 📋 Reportes Cargados - Período: {periodo_filtro}")
     
-    query_reportes = f"""
-        SELECT 
-            c.fecha_carga,
-            ct.nombre as contrato,
-            cl.nombre as cliente,
-            c.semana,
-            c.tipo_reporte,
-            c.archivo_original
-        FROM control_cargas c
-        JOIN contratos ct ON c.id_contrato = ct.id
-        LEFT JOIN clientes cl ON c.id_cliente = cl.id
-        WHERE c.periodo = '{periodo_filtro}'
-        ORDER BY c.fecha_carga DESC
-    """
-    
-    df_reportes = pd.read_sql(query_reportes, conn)
+    # Obtener reportes del período
+    df_reportes = run_query("control_cargas", 
+                           select="fecha_carga, id_contrato, id_cliente, semana, tipo_reporte, archivo_original",
+                           filters={"periodo": periodo_filtro})
     
     if not df_reportes.empty:
+        # Obtener nombres de contratos
+        df_contratos = run_query("contratos", select="id, nombre")
+        contratos_dict = dict(zip(df_contratos['id'], df_contratos['nombre']))
+        
+        # Obtener nombres de clientes
+        df_clientes = run_query("clientes", select="id, nombre")
+        clientes_dict = dict(zip(df_clientes['id'], df_clientes['nombre']))
+        
+        df_reportes['contrato'] = df_reportes['id_contrato'].map(contratos_dict)
+        df_reportes['cliente'] = df_reportes['id_cliente'].map(clientes_dict)
         df_reportes['fecha_carga'] = pd.to_datetime(df_reportes['fecha_carga']).dt.strftime('%Y-%m-%d %H:%M')
         df_reportes['semana'] = df_reportes['semana'].apply(lambda x: f"S{int(x)}" if x and x > 0 else "-")
         df_reportes = df_reportes.rename(columns={
@@ -303,7 +297,7 @@ with tab1:
         })
         
         st.dataframe(
-            df_reportes,
+            df_reportes[['Fecha Carga', 'Contrato', 'Cliente', 'Semana', 'Tipo', 'Archivo']],
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -385,28 +379,25 @@ with tab2:
                             if nulos_antes > 0:
                                 st.info(f"ℹ️ Se rellenaron {nulos_antes} celdas vacías con 0 en las columnas de precios")
                             
-                            cursor = conn.cursor()
-                            cursor.execute("PRAGMA table_info(costos)")
-                            columnas_tabla = [col[1] for col in cursor.fetchall() if col[1] != 'id']
+                            # Obtener cliente de Supabase para verificar columnas
+                            supabase = get_supabase()
                             
-                            columnas_excel = set(df.columns)
-                            columnas_tabla_set = set(columnas_tabla)
-                            columnas_faltantes = columnas_tabla_set - columnas_excel
+                            # Eliminar registros existentes del período
+                            result_delete = supabase.table('costos').delete().eq('periodo', periodo_costos).execute()
+                            registros_eliminados = len(result_delete.data) if result_delete.data else 0
                             
-                            if columnas_faltantes:
-                                st.error(f"❌ Faltan columnas en el archivo: {columnas_faltantes}")
-                                st.stop()
+                            # Insertar nuevos registros
+                            registros_insertados = 0
+                            for _, row in df.iterrows():
+                                # Filtrar solo las columnas que existen en la tabla
+                                data_row = row.to_dict()
+                                # Remover NaN y None
+                                data_row = {k: (v if pd.notna(v) else None) for k, v in data_row.items()}
+                                result_insert = supabase.table('costos').insert(data_row).execute()
+                                if result_insert.data:
+                                    registros_insertados += 1
                             
-                            cursor.execute("DELETE FROM costos WHERE periodo = ?", (periodo_costos,))
-                            registros_eliminados = cursor.rowcount
-                            
-                            df.to_sql('costos', conn, if_exists='append', index=False)
-                            conn.commit()
-                            
-                            cursor.execute("SELECT COUNT(*) FROM costos WHERE periodo = ?", (periodo_costos,))
-                            count = cursor.fetchone()[0]
-                            
-                            st.success(f"✅ Período {periodo_costos}: {registros_eliminados} registros reemplazados por {count} nuevos")
+                            st.success(f"✅ Período {periodo_costos}: {registros_eliminados} registros reemplazados por {registros_insertados} nuevos")
                             
                             os.unlink(ruta_temporal)
                             st.rerun()
@@ -421,14 +412,12 @@ with tab2:
     with col_lista:
         st.markdown("#### 📋 Períodos Cargados")
         
-        df_periodos = pd.read_sql("""
-            SELECT DISTINCT periodo, COUNT(*) as registros
-            FROM costos
-            GROUP BY periodo
-            ORDER BY periodo DESC
-        """, conn)
+        # Obtener períodos de costos
+        df_costos = run_query("costos", select="periodo")
         
-        if not df_periodos.empty:
+        if not df_costos.empty:
+            df_periodos = df_costos.groupby('periodo').size().reset_index(name='registros')
+            df_periodos = df_periodos.sort_values('periodo', ascending=False)
             df_periodos = df_periodos.rename(columns={
                 'periodo': 'Período',
                 'registros': 'Registros'
