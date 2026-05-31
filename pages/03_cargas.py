@@ -379,25 +379,40 @@ with tab2:
                             if nulos_antes > 0:
                                 st.info(f"ℹ️ Se rellenaron {nulos_antes} celdas vacías con 0 en las columnas de precios")
                             
-                            # Obtener cliente de Supabase para verificar columnas
                             supabase = get_supabase()
                             
                             # Eliminar registros existentes del período
-                            result_delete = supabase.table('costos').delete().eq('periodo', periodo_costos).execute()
-                            registros_eliminados = len(result_delete.data) if result_delete.data else 0
+                            try:
+                                supabase.table('costos').delete().eq('periodo', periodo_costos).execute()
+                                st.info(f"🗑️ Registros eliminados para período {periodo_costos}")
+                            except Exception as e:
+                                st.warning(f"⚠️ No se pudieron eliminar registros anteriores: {str(e)}")
                             
-                            # Insertar nuevos registros
-                            registros_insertados = 0
-                            for _, row in df.iterrows():
-                                # Filtrar solo las columnas que existen en la tabla
-                                data_row = row.to_dict()
-                                # Remover NaN y None
-                                data_row = {k: (v if pd.notna(v) else None) for k, v in data_row.items()}
-                                result_insert = supabase.table('costos').insert(data_row).execute()
-                                if result_insert.data:
-                                    registros_insertados += 1
+                            # Pequeña pausa para asegurar eliminación
+                            import time
+                            time.sleep(1)
                             
-                            st.success(f"✅ Período {periodo_costos}: {registros_eliminados} registros reemplazados por {registros_insertados} nuevos")
+                            df = df.drop_duplicates(subset=['codigo', 'periodo'], keep='first')
+                            st.info(f"📊 Archivo procesado: {len(df)} registros únicos")
+
+                            # Insertar TODOS los registros de una sola vez
+                            try:
+                                registros = []
+                                for _, row in df.iterrows():
+                                    data_row = row.to_dict()
+                                    data_row = {k: (v if pd.notna(v) else None) for k, v in data_row.items()}
+                                    registros.append(data_row)
+                                
+                                supabase.table('costos').insert(registros).execute()
+                                st.success(f"✅ Período {periodo_costos}: {len(registros)} registros insertados correctamente")
+                                
+                            except Exception as e:
+                                st.error(f"❌ Error al insertar: {str(e)}")
+
+
+
+
+                          
                             
                             os.unlink(ruta_temporal)
                             st.rerun()
@@ -408,7 +423,8 @@ with tab2:
                                 os.unlink(ruta_temporal)
                             except:
                                 pass
-    
+
+
     with col_lista:
         st.markdown("#### 📋 Períodos Cargados")
         
@@ -433,6 +449,10 @@ with tab2:
             )
         else:
             st.info("No hay costos cargados")
+
+
+
+
 
 # ============================================================================
 # FOOTER

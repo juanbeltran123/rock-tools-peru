@@ -110,7 +110,7 @@ def procesar_estado_acero(df, inicio_fila, fin_fila, estado, periodo, semana,
     supabase = get_supabase()
     fila_actual = inicio_fila
     tipo_perforacion_actual = None
-    registros_generales_por_cliente = {}  # Guarda ids de acero_general
+    registros_generales_por_cliente = {}
     total_detalles = 0
     errores = 0
     
@@ -139,6 +139,7 @@ def procesar_estado_acero(df, inicio_fila, fin_fila, estado, periodo, semana,
             if tipo_perforacion_actual:
                 id_tipo_perf = obtener_tipo_perforacion(tipo_perforacion_actual)
                 if id_tipo_perf is None:
+                    print(f"      ⚠️ Tipo de perforación '{tipo_perforacion_actual}' no existe - omitiendo fila")
                     errores += 1
                     fila_actual += 1
                     continue
@@ -184,46 +185,74 @@ def procesar_estado_acero(df, inicio_fila, fin_fila, estado, periodo, semana,
                         
                         # Buscar o crear acero_general
                         if key not in registros_generales_por_cliente:
-                            # Buscar si ya existe
-                            response = supabase.table("acero_general").select("id")\
+                            # Construir consulta dinámicamente
+                            query = supabase.table("acero_general").select("id")\
                                 .eq("periodo", periodo)\
                                 .eq("semana", semana)\
                                 .eq("id_contrato", id_contrato)\
                                 .eq("id_cliente", id_cliente)\
                                 .eq("tipo_operacion", estado)\
-                                .eq("id_tipo_perforacion", id_tipo_perf if id_tipo_perf else None)\
-                                .execute()
+                                .eq("tipo_reporte", tipo_reporte)
+                            
+                            # Solo agregar filtro si id_tipo_perf no es None
+                            if id_tipo_perf is not None:
+                                query = query.eq("id_tipo_perforacion", id_tipo_perf)
+                            else:
+                                query = query.is_("id_tipo_perforacion", None)
+                            
+                            response = query.execute()
                             
                             if response.data:
                                 id_acero_general = response.data[0]['id']
+                                print(f"        ♻️ Reutilizando acero_general ID: {id_acero_general}")
                             else:
                                 # Crear nuevo
-                                new_response = supabase.table("acero_general").insert({
+                                data = {
                                     "periodo": periodo,
                                     "semana": semana,
                                     "id_contrato": id_contrato,
                                     "id_cliente": id_cliente,
-                                    "id_tipo_perforacion": id_tipo_perf,
                                     "tipo_operacion": estado,
                                     "tipo_reporte": tipo_reporte,
                                     "observacion": None
-                                }).execute()
+                                }
+                                if id_tipo_perf is not None:
+                                    data["id_tipo_perforacion"] = id_tipo_perf
+                                
+                                new_response = supabase.table("acero_general").insert(data).execute()
                                 id_acero_general = new_response.data[0]['id']
+                                print(f"        ✨ Nuevo acero_general ID: {id_acero_general}")
                             
                             registros_generales_por_cliente[key] = id_acero_general
                         else:
                             id_acero_general = registros_generales_por_cliente[key]
                         
-                        # Insertar detalle
-                        supabase.table("acero_detalle").insert({
+                        # Insertar detalle (SOLO UNA VEZ)
+                        detalle_data = {
                             "id_acero_general": id_acero_general,
                             "codigo": codigo,
                             "cantidad": cantidad,
                             "p_venta": p_venta,
                             "descripcion": str(descripcion) if pd.notna(descripcion) else None
-                        }).execute()
+                        }
+                        if familia:
+                            detalle_data["familia"] = str(familia) if pd.notna(familia) else None
                         
-                        total_detalles += 1
+                        print(f"📝 Insertando detalle: id_acero_general={id_acero_general}, codigo={codigo}, cantidad={cantidad}")
+                        
+                        # Verificar si ya existe para evitar duplicados
+                        check_existing = supabase.table("acero_detalle").select("id")\
+                            .eq("id_acero_general", id_acero_general)\
+                            .eq("codigo", codigo)\
+                            .execute()
+                        
+                        if not check_existing.data:
+                            result = supabase.table("acero_detalle").insert(detalle_data).execute()
+                            print(f"   ✅ Insertado correctamente")
+                            total_detalles += 1
+                        else:
+                            print(f"   ⚠️ Ya existe, omitiendo")
+                            total_detalles += 1  # Cuenta como procesado aunque ya exista
                         
                         if total_detalles % 20 == 0:
                             print(f"        ... {total_detalles} detalles en {estado}")
@@ -236,6 +265,8 @@ def procesar_estado_acero(df, inicio_fila, fin_fila, estado, periodo, semana,
     
     print(f"  ✅ ESTADO:{estado}: {total_detalles} detalles, {errores} errores")
     return total_detalles
+
+
 
 def procesar_metros_perforados(df, inicio_fila, fin_fila, periodo, semana, id_contrato, tipo_reporte):
     """Procesar la sección de metros perforados"""
@@ -347,7 +378,9 @@ def limpiar_datos_existentes(periodo, semana, id_contrato):
     """Eliminar datos existentes para el período, semana y contrato específicos"""
     supabase = get_supabase()
     
-    # 1. Obtener ids de acero_general
+    print(f"\n🗑️ LIMPIANDO datos existentes para periodo={periodo}, semana={semana}, id_contrato={id_contrato}")
+    
+    # 1. Primero eliminar acero_detalle (usando los IDs de acero_general a eliminar)
     response = supabase.table("acero_general").select("id")\
         .eq("periodo", periodo)\
         .eq("semana", semana)\
@@ -355,20 +388,15 @@ def limpiar_datos_existentes(periodo, semana, id_contrato):
         .execute()
     
     ids_acero = [row['id'] for row in response.data] if response.data else []
+    print(f"   📍 IDs de acero_general a eliminar: {ids_acero}")
     
-    # 2. Eliminar detalles de acero
     if ids_acero:
+        # Eliminar detalles de acero (usando IN)
         for id_acero in ids_acero:
             supabase.table("acero_detalle").delete().eq("id_acero_general", id_acero).execute()
+        print(f"   ✅ Eliminados detalles de acero")
     
-    # 3. Eliminar acero_general
-    supabase.table("acero_general").delete()\
-        .eq("periodo", periodo)\
-        .eq("semana", semana)\
-        .eq("id_contrato", id_contrato)\
-        .execute()
-    
-    # 4. Obtener ids de perforacion_general
+    # 2. Eliminar perforacion_detalle
     response2 = supabase.table("perforacion_general").select("id")\
         .eq("periodo", periodo)\
         .eq("semana", semana)\
@@ -376,20 +404,32 @@ def limpiar_datos_existentes(periodo, semana, id_contrato):
         .execute()
     
     ids_perf = [row['id'] for row in response2.data] if response2.data else []
+    print(f"   📍 IDs de perforacion_general a eliminar: {ids_perf}")
     
-    # 5. Eliminar detalles de perforación
     if ids_perf:
         for id_perf in ids_perf:
             supabase.table("perforacion_detalle").delete().eq("id_perforacion_general", id_perf).execute()
+        print(f"   ✅ Eliminados detalles de perforación")
+        
+        # Eliminar perforacion_general
+        supabase.table("perforacion_general").delete()\
+            .eq("periodo", periodo)\
+            .eq("semana", semana)\
+            .eq("id_contrato", id_contrato)\
+            .execute()
+        print(f"   ✅ Eliminados registros de perforacion_general")
     
-    # 6. Eliminar perforacion_general
-    supabase.table("perforacion_general").delete()\
-        .eq("periodo", periodo)\
-        .eq("semana", semana)\
-        .eq("id_contrato", id_contrato)\
-        .execute()
+    # 3. Finalmente eliminar acero_general
+    if ids_acero:
+        supabase.table("acero_general").delete()\
+            .eq("periodo", periodo)\
+            .eq("semana", semana)\
+            .eq("id_contrato", id_contrato)\
+            .execute()
+        print(f"   ✅ Eliminados registros de acero_general")
     
-    print(f"\n🗑️ LIMPIEZA PREVIA completada")
+    print(f"🗑️ LIMPIEZA PREVIA completada\n")
+
 
 # ============================================================================
 # FUNCIÓN PRINCIPAL

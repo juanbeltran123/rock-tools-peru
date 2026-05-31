@@ -235,7 +235,8 @@ with col_f2:
             semanas_avance.sort()
         else:
             semanas_avance = []
-        
+
+                
         # Verificar si existen períodos con CIERRE
         df_cierre = run_query("vw_general_semanal", 
                              select="periodo",
@@ -403,8 +404,22 @@ with st.container(border=True):
     
     # Obtener datos de evolución
     df_evolucion = run_query("vw_general_semanal",
-                             select="periodo, tipo, ingresos, costos, otros_costos",
+                             select="periodo, tipo, ingresos, costos, otros_costos,tipo_reporte,semana",
                              filters={"periodo": periodos_para_evolucion})
+
+    if not df_evolucion.empty:
+
+        st.dataframe(df_evolucion.head(10))
+    else:
+        st.error("❌ No se trajeron datos para los períodos seleccionados")
+        st.write("Períodos solicitados:", periodos_para_evolucion)
+        st.write("filtro_tipo_reporte:", filtro_tipo_reporte)
+        st.write("filtro_semana_valor:", filtro_semana_valor)
+
+
+
+
+
     
     # Aplicar filtro de semana si existe
     if filtro_semana_valor is not None:
@@ -460,13 +475,13 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 # ============================================================================
 # GRÁFICO DE MÁRGENES POR CONTRATO
-# ============================================================================
+# ========================================================================
 with st.container(border=True):
     st.markdown("### 📊 Márgenes por Contrato")
     
     # Obtener datos de contratos
     df_contratos_raw = run_query("vw_general_semanal",
-                                 select="id_contrato, tipo, ingresos, costos, otros_costos",
+                                 select="id_contrato, tipo, ingresos, costos, otros_costos,tipo_reporte,semana",
                                  filters={"periodo": periodos_seleccionados, "tipo_reporte": filtro_tipo_reporte})
     
     if filtro_semana_valor is not None:
@@ -603,7 +618,7 @@ with col_margen:
         
         # Calcular margen mensual
         df_margen_mensual_raw = run_query("vw_general_semanal",
-                                         select="periodo, tipo, ingresos, costos, otros_costos",
+                                         select="periodo, tipo, ingresos, costos, otros_costos,tipo_reporte,semana",
                                          filters={"periodo": periodos_seleccionados})
         
         if filtro_semana_valor is not None:

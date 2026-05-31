@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime
 import os
-from database.conexion import get_connection
+import time
+import hashlib
+from database.conexion import run_query, get_supabase
 
 # Configuración de la página
 st.set_page_config(
@@ -44,8 +46,6 @@ if 'autenticado' not in st.session_state or not st.session_state['autenticado']:
 
 if 'usuario' not in st.session_state:
     st.session_state['usuario'] = 'Admin'
-
-conn = get_connection()
 
 # ============================================================================
 # HEADER CON NAVEGACIÓN
@@ -123,7 +123,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 def cargar_opciones_contrato():
     """Cargar contratos para combos - limpiando números del nombre"""
-    df = pd.read_sql("SELECT id, nombre FROM contratos WHERE activo = 1 ORDER BY nombre", conn)
+    df = run_query("contratos", select="id, nombre", filters={"activo": 1})
     
     opciones = {}
     for _, row in df.iterrows():
@@ -144,12 +144,8 @@ def cargar_opciones_cliente(id_contrato=None):
         # Debug
         st.write(f"🔍 Debug - Filtrando clientes por id_contrato = {id_contrato}")
         
-        df = pd.read_sql(f"""
-            SELECT id, nombre, codigo, id_contrato
-            FROM clientes 
-            WHERE activo = 1 AND id_contrato = {id_contrato} 
-            ORDER BY nombre
-        """, conn)
+        df = run_query("clientes", select="id, nombre, codigo, id_contrato",
+                      filters={"activo": 1, "id_contrato": id_contrato})
         
         # Debug: mostrar cuántos encontró
         st.write(f"🔍 Debug - Clientes encontrados: {len(df)}")
@@ -158,12 +154,8 @@ def cargar_opciones_cliente(id_contrato=None):
         
     else:
         st.write("🔍 Debug - Cargando TODOS los clientes (sin filtro)")
-        df = pd.read_sql("""
-            SELECT id, nombre, codigo, id_contrato
-            FROM clientes 
-            WHERE activo = 1 
-            ORDER BY nombre
-        """, conn)
+        df = run_query("clientes", select="id, nombre, codigo, id_contrato",
+                      filters={"activo": 1})
         
         st.write(f"🔍 Debug - Clientes encontrados: {len(df)}")
         st.dataframe(df)
@@ -172,17 +164,17 @@ def cargar_opciones_cliente(id_contrato=None):
 
 def cargar_opciones_tipo_perforacion():
     """Cargar tipos de perforación"""
-    df = pd.read_sql("SELECT id, nombre FROM tipo_perforacion WHERE activo = 1 ORDER BY nombre", conn)
+    df = run_query("tipo_perforacion", select="id, nombre", filters={"activo": 1})
     return {row['nombre']: row['id'] for _, row in df.iterrows()}
 
 def cargar_opciones_familia():
     """Cargar familias"""
-    df = pd.read_sql("SELECT id, nombre FROM familia ORDER BY nombre", conn)
+    df = run_query("familia", select="id, nombre")
     return {row['nombre']: row['id'] for _, row in df.iterrows()}
 
 def cargar_opciones_concepto():
     """Cargar conceptos de gastos"""
-    df = pd.read_sql("SELECT id, concepto FROM conceptos_gastos WHERE activo = 1 ORDER BY concepto", conn)
+    df = run_query("conceptos_gastos", select="id, concepto", filters={"activo": 1})
     return {row['concepto']: row['id'] for _, row in df.iterrows()}
 
 
@@ -195,9 +187,9 @@ def render_tarifas():
     st.markdown("### 💰 Gestión de Tarifas")
     
     # Cargar datos directamente
-    df_contratos = pd.read_sql("SELECT id, nombre FROM contratos WHERE activo = 1 ORDER BY id", conn)
-    contratos_lista = [row['nombre'] for _, row in df_contratos.iterrows()]
-    contratos_dict = {row['nombre']: row['id'] for _, row in df_contratos.iterrows()}
+    df_contratos = run_query("contratos", select="id, nombre", filters={"activo": 1})
+    contratos_lista = df_contratos['nombre'].tolist()
+    contratos_dict = dict(zip(df_contratos['nombre'], df_contratos['id']))
     
     # Estado inicial
     if 'tarifa_contrato_seleccionado' not in st.session_state:
@@ -224,20 +216,16 @@ def render_tarifas():
             
             # Cargar clientes del contrato seleccionado
             id_contrato = contratos_dict[contrato]
-            df_clientes = pd.read_sql(f"""
-                SELECT id, nombre, codigo 
-                FROM clientes 
-                WHERE activo = 1 AND id_contrato = {id_contrato}
-                ORDER BY nombre
-            """, conn)
+            df_clientes = run_query("clientes", select="id, nombre, codigo",
+                                   filters={"activo": 1, "id_contrato": id_contrato})
             
             clientes_lista = ["(Todos los clientes)"] + [f"{row['nombre']} ({row['codigo']})" for _, row in df_clientes.iterrows()]
             cliente = st.selectbox("Cliente", options=clientes_lista, key="sel_cliente_tarifa")
             
             # Tipo perforación
-            df_tipos = pd.read_sql("SELECT id, nombre FROM tipo_perforacion WHERE activo = 1 ORDER BY nombre", conn)
-            tipos_lista = [row['nombre'] for _, row in df_tipos.iterrows()]
-            tipos_dict = {row['nombre']: row['id'] for _, row in df_tipos.iterrows()}
+            df_tipos = run_query("tipo_perforacion", select="id, nombre", filters={"activo": 1})
+            tipos_lista = df_tipos['nombre'].tolist()
+            tipos_dict = dict(zip(df_tipos['nombre'], df_tipos['id']))
             
             tipo_perf = st.selectbox("Tipo de Perforación *", options=tipos_lista, key="sel_tipo_tarifa")
         
@@ -256,20 +244,21 @@ def render_tarifas():
                 st.error("❌ Los campos marcados con * son obligatorios")
             else:
                 try:
+                    supabase = get_supabase()
                     id_contrato = contratos_dict[contrato]
                     id_tipo = tipos_dict[tipo_perf]
                     id_cliente = None if cliente == "(Todos los clientes)" else df_clientes[df_clientes.apply(lambda r: f"{r['nombre']} ({r['codigo']})" == cliente, axis=1)]['id'].values[0]
                     
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        INSERT INTO tarifas 
-                        (id_contrato, id_cliente, id_tipo_perforacion, tarifa, periodo_desde, periodo_hasta, observacion)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (id_contrato, id_cliente, id_tipo, tarifa_valor,
-                          fecha_desde.strftime('%Y-%m-%d'),
-                          fecha_hasta.strftime('%Y-%m-%d') if fecha_hasta else None,
-                          observacion if observacion else None))
-                    conn.commit()
+                    data = {
+                        'id_contrato': id_contrato,
+                        'id_cliente': id_cliente,
+                        'id_tipo_perforacion': id_tipo,
+                        'tarifa': tarifa_valor,
+                        'periodo_desde': fecha_desde.strftime('%Y-%m-%d'),
+                        'periodo_hasta': fecha_hasta.strftime('%Y-%m-%d') if fecha_hasta else None,
+                        'observacion': observacion if observacion else None
+                    }
+                    supabase.table('tarifas').insert(data).execute()
                     st.success("✅ Tarifa guardada correctamente")
                     st.rerun()
                 except Exception as e:
@@ -279,26 +268,25 @@ def render_tarifas():
     st.markdown("---")
     st.markdown("#### 💰 Tarifas Registradas")
     
-    df_tarifas = pd.read_sql("""
-        SELECT t.id,
-               co.nombre as contrato,
-               cl.nombre as cliente,
-               tp.nombre as tipo_perforacion,
-               t.tarifa,
-               t.periodo_desde,
-               t.periodo_hasta
-        FROM tarifas t
-        JOIN contratos co ON t.id_contrato = co.id
-        JOIN tipo_perforacion tp ON t.id_tipo_perforacion = tp.id
-        LEFT JOIN clientes cl ON t.id_cliente = cl.id
-        ORDER BY t.periodo_desde DESC
-        LIMIT 50
-    """, conn)
+    df_tarifas = run_query("tarifas", select="id, id_contrato, id_cliente, id_tipo_perforacion, tarifa, periodo_desde, periodo_hasta")
     
     if not df_tarifas.empty:
-        df_show = df_tarifas.copy()
-        df_show['cliente'] = df_show['cliente'].fillna('(Todos)')
-        df_show['tarifa'] = df_show['tarifa'].apply(lambda x: f"S/. {x:,.2f}")
+        # Obtener nombres
+        df_contratos_nombres = run_query("contratos", select="id, nombre")
+        df_tipos_nombres = run_query("tipo_perforacion", select="id, nombre")
+        df_clientes_nombres = run_query("clientes", select="id, nombre")
+        
+        contratos_dict_n = dict(zip(df_contratos_nombres['id'], df_contratos_nombres['nombre']))
+        tipos_dict_n = dict(zip(df_tipos_nombres['id'], df_tipos_nombres['nombre']))
+        clientes_dict_n = dict(zip(df_clientes_nombres['id'], df_clientes_nombres['nombre']))
+        
+        df_tarifas['contrato'] = df_tarifas['id_contrato'].map(contratos_dict_n)
+        df_tarifas['tipo_perforacion'] = df_tarifas['id_tipo_perforacion'].map(tipos_dict_n)
+        df_tarifas['cliente'] = df_tarifas['id_cliente'].map(clientes_dict_n)
+        df_tarifas['cliente'] = df_tarifas['cliente'].fillna('(Todos)')
+        df_tarifas['tarifa'] = df_tarifas['tarifa'].apply(lambda x: f"S/. {x:,.2f}")
+        
+        df_show = df_tarifas[['id', 'contrato', 'cliente', 'tipo_perforacion', 'tarifa', 'periodo_desde', 'periodo_hasta']]
         df_show.columns = ['ID', 'Contrato', 'Cliente', 'Tipo Perf.', 'Tarifa', 'Desde', 'Hasta']
         st.dataframe(df_show, use_container_width=True, hide_index=True)
     else:
@@ -343,19 +331,20 @@ with tab1:
                     st.error("Nombre y tipo son obligatorios")
                 else:
                     try:
-                        cursor = conn.cursor()
-                        cursor.execute('''
-                            INSERT INTO contratos (nombre, tipo_operacion, activo)
-                            VALUES (?, ?, ?)
-                        ''', (nombre, tipo, 1 if activo else 0))
-                        conn.commit()
+                        supabase = get_supabase()
+                        data = {
+                            'nombre': nombre,
+                            'tipo_operacion': tipo,
+                            'activo': 1 if activo else 0
+                        }
+                        supabase.table('contratos').insert(data).execute()
                         st.success("✅ Contrato guardado correctamente")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
     
     st.markdown("#### 📋 Contratos Registrados")
-    df_contratos = pd.read_sql("SELECT id, nombre, tipo_operacion, activo FROM contratos ORDER BY nombre", conn)
+    df_contratos = run_query("contratos", select="id, nombre, tipo_operacion, activo")
     
     if not df_contratos.empty:
         df_show = df_contratos.copy()
@@ -393,29 +382,31 @@ with tab2:
                     st.error("Todos los campos son obligatorios")
                 else:
                     try:
+                        supabase = get_supabase()
                         id_contrato = opciones_contrato[contrato_sel]
-                        cursor = conn.cursor()
-                        cursor.execute('''
-                            INSERT INTO clientes (nombre, codigo, id_contrato, activo)
-                            VALUES (?, ?, ?, ?)
-                        ''', (nombre, codigo, id_contrato, 1 if activo else 0))
-                        conn.commit()
+                        data = {
+                            'nombre': nombre,
+                            'codigo': codigo,
+                            'id_contrato': id_contrato,
+                            'activo': 1 if activo else 0
+                        }
+                        supabase.table('clientes').insert(data).execute()
                         st.success("✅ Cliente guardado correctamente")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
     
     st.markdown("#### 👥 Clientes Registrados")
-    df_clientes = pd.read_sql("""
-        SELECT c.id, c.nombre, c.codigo, co.nombre as contrato, c.activo 
-        FROM clientes c
-        JOIN contratos co ON c.id_contrato = co.id
-        ORDER BY c.nombre
-    """, conn)
+    df_clientes = run_query("clientes", select="id, nombre, codigo, id_contrato, activo")
     
     if not df_clientes.empty:
+        df_contratos_nombres = run_query("contratos", select="id, nombre")
+        contratos_dict = dict(zip(df_contratos_nombres['id'], df_contratos_nombres['nombre']))
+        df_clientes['contrato'] = df_clientes['id_contrato'].map(contratos_dict)
+        
         df_show = df_clientes.copy()
         df_show['activo'] = df_show['activo'].apply(lambda x: '✅' if x else '❌')
+        df_show = df_show[['id', 'nombre', 'codigo', 'contrato', 'activo']]
         df_show.columns = ['ID', 'Nombre', 'Código', 'Contrato', 'Activo']
         st.dataframe(df_show, use_container_width=True, hide_index=True)
     else:
@@ -444,19 +435,20 @@ with tab3:
                     st.error("El nombre es obligatorio")
                 else:
                     try:
-                        cursor = conn.cursor()
-                        cursor.execute('''
-                            INSERT INTO tipo_perforacion (nombre, descripcion, activo)
-                            VALUES (?, ?, ?)
-                        ''', (nombre, descripcion if descripcion else None, 1 if activo else 0))
-                        conn.commit()
+                        supabase = get_supabase()
+                        data = {
+                            'nombre': nombre,
+                            'descripcion': descripcion if descripcion else None,
+                            'activo': 1 if activo else 0
+                        }
+                        supabase.table('tipo_perforacion').insert(data).execute()
                         st.success("✅ Tipo guardado correctamente")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
     
     st.markdown("#### 🔩 Tipos Registrados")
-    df_tipos = pd.read_sql("SELECT id, nombre, descripcion, activo FROM tipo_perforacion ORDER BY nombre", conn)
+    df_tipos = run_query("tipo_perforacion", select="id, nombre, descripcion, activo")
     
     if not df_tipos.empty:
         df_show = df_tipos.copy()
@@ -484,19 +476,19 @@ with tab4:
                     st.error("El nombre es obligatorio")
                 else:
                     try:
-                        cursor = conn.cursor()
-                        cursor.execute('''
-                            INSERT INTO familia (nombre, descripcion)
-                            VALUES (?, ?)
-                        ''', (nombre, descripcion if descripcion else None))
-                        conn.commit()
+                        supabase = get_supabase()
+                        data = {
+                            'nombre': nombre,
+                            'descripcion': descripcion if descripcion else None
+                        }
+                        supabase.table('familia').insert(data).execute()
                         st.success("✅ Familia guardada correctamente")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
     
     st.markdown("#### 🏷️ Familias Registradas")
-    df_familias = pd.read_sql("SELECT id, nombre, descripcion FROM familia ORDER BY nombre", conn)
+    df_familias = run_query("familia", select="id, nombre, descripcion")
     
     if not df_familias.empty:
         df_show = df_familias.copy()
@@ -528,19 +520,20 @@ with tab5:
                     st.error("El concepto es obligatorio")
                 else:
                     try:
-                        cursor = conn.cursor()
-                        cursor.execute('''
-                            INSERT INTO conceptos_gastos (concepto, descripcion, activo)
-                            VALUES (?, ?, ?)
-                        ''', (concepto, descripcion if descripcion else None, 1 if activo else 0))
-                        conn.commit()
+                        supabase = get_supabase()
+                        data = {
+                            'concepto': concepto,
+                            'descripcion': descripcion if descripcion else None,
+                            'activo': 1 if activo else 0
+                        }
+                        supabase.table('conceptos_gastos').insert(data).execute()
                         st.success("✅ Concepto guardado correctamente")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
     
     st.markdown("#### 📝 Conceptos Registrados")
-    df_conceptos = pd.read_sql("SELECT id, concepto, descripcion, activo FROM conceptos_gastos ORDER BY concepto", conn)
+    df_conceptos = run_query("conceptos_gastos", select="id, concepto, descripcion, activo")
     
     if not df_conceptos.empty:
         df_show = df_conceptos.copy()
@@ -559,8 +552,6 @@ with tab6:
     # ================================================================
     # KEY DINÁMICA PARA EVITAR CACHÉ DE STREAMLIT
     # ================================================================
-    import time
-    import hashlib
     
     # Generar una key única basada en el tiempo
     if 'tab6_init_time' not in st.session_state:
@@ -574,15 +565,15 @@ with tab6:
     # ================================================================
     @st.cache_data(ttl=60)
     def cargar_contratos_obj():
-        return pd.read_sql("SELECT id, nombre FROM contratos WHERE activo = 1 ORDER BY id", conn)
+        return run_query("contratos", select="id, nombre", filters={"activo": 1})
     
     @st.cache_data(ttl=60)
     def cargar_tipos_obj():
-        return pd.read_sql("SELECT id, nombre FROM tipo_perforacion WHERE activo = 1 ORDER BY nombre", conn)
+        return run_query("tipo_perforacion", select="id, nombre", filters={"activo": 1})
     
     @st.cache_data(ttl=60)
     def cargar_familias_obj():
-        return pd.read_sql("SELECT id, nombre FROM familia ORDER BY nombre", conn)
+        return run_query("familia", select="id, nombre")
     
     df_cont = cargar_contratos_obj()
     df_tipos = cargar_tipos_obj()
@@ -614,12 +605,8 @@ with tab6:
     # ================================================================
     # CARGAR CLIENTES DEL CONTRATO SELECCIONADO
     # ================================================================
-    df_clientes = pd.read_sql(f"""
-        SELECT id, nombre, codigo 
-        FROM clientes 
-        WHERE activo = 1 AND id_contrato = {id_contrato}
-        ORDER BY nombre
-    """, conn)
+    df_clientes = run_query("clientes", select="id, nombre, codigo",
+                           filters={"activo": 1, "id_contrato": id_contrato})
     
     # Crear diccionario de clientes para búsqueda fácil
     dict_clientes = {}
@@ -706,6 +693,7 @@ with tab6:
                 st.error("❌ Los campos marcados con * son obligatorios")
             else:
                 try:
+                    supabase = get_supabase()
                     # Obtener IDs
                     id_tipo = dict_tipos[tipo_nombre]
                     id_familia = dict_familias[familia_nombre]
@@ -720,23 +708,17 @@ with tab6:
                             st.warning(f"⚠️ Cliente '{cliente_label}' no encontrado en el diccionario")
                     
                     # Insertar en BD
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        INSERT INTO objetivos 
-                        (id_contrato, id_cliente, id_tipo_perforacion, id_familia, objetivo, 
-                         periodo_desde, periodo_hasta, observacion)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        id_contrato, 
-                        id_cliente, 
-                        id_tipo, 
-                        id_familia, 
-                        objetivo_valor,
-                        fecha_desde.strftime('%Y-%m-%d'),
-                        fecha_hasta.strftime('%Y-%m-%d') if fecha_hasta else None,
-                        observacion if observacion else None
-                    ))
-                    conn.commit()
+                    data = {
+                        'id_contrato': id_contrato,
+                        'id_cliente': id_cliente,
+                        'id_tipo_perforacion': id_tipo,
+                        'id_familia': id_familia,
+                        'objetivo': objetivo_valor,
+                        'periodo_desde': fecha_desde.strftime('%Y-%m-%d'),
+                        'periodo_hasta': fecha_hasta.strftime('%Y-%m-%d') if fecha_hasta else None,
+                        'observacion': observacion if observacion else None
+                    }
+                    supabase.table('objetivos').insert(data).execute()
                     
                     st.success("✅ Objetivo guardado correctamente")
                     
@@ -753,28 +735,27 @@ with tab6:
     st.markdown("---")
     st.markdown("#### 🎯 Objetivos Registrados")
     
-    df_objetivos = pd.read_sql("""
-        SELECT o.id,
-               co.nombre as contrato,
-               cl.nombre as cliente,
-               tp.nombre as tipo_perforacion,
-               f.nombre as familia,
-               o.objetivo,
-               o.periodo_desde,
-               o.periodo_hasta,
-               o.observacion
-        FROM objetivos o
-        JOIN contratos co ON o.id_contrato = co.id
-        JOIN tipo_perforacion tp ON o.id_tipo_perforacion = tp.id
-        JOIN familia f ON o.id_familia = f.id
-        LEFT JOIN clientes cl ON o.id_cliente = cl.id
-        ORDER BY o.periodo_desde DESC
-        LIMIT 100
-    """, conn)
+    df_objetivos = run_query("objetivos", select="id, id_contrato, id_cliente, id_tipo_perforacion, id_familia, objetivo, periodo_desde, periodo_hasta, observacion")
     
     if not df_objetivos.empty:
-        df_show = df_objetivos.copy()
-        df_show['cliente'] = df_show['cliente'].fillna('(Todos)')
+        # Obtener nombres
+        df_contratos_nombres = run_query("contratos", select="id, nombre")
+        df_tipos_nombres = run_query("tipo_perforacion", select="id, nombre")
+        df_familias_nombres = run_query("familia", select="id, nombre")
+        df_clientes_nombres = run_query("clientes", select="id, nombre")
+        
+        contratos_dict = dict(zip(df_contratos_nombres['id'], df_contratos_nombres['nombre']))
+        tipos_dict = dict(zip(df_tipos_nombres['id'], df_tipos_nombres['nombre']))
+        familias_dict = dict(zip(df_familias_nombres['id'], df_familias_nombres['nombre']))
+        clientes_dict = dict(zip(df_clientes_nombres['id'], df_clientes_nombres['nombre']))
+        
+        df_objetivos['contrato'] = df_objetivos['id_contrato'].map(contratos_dict)
+        df_objetivos['tipo_perforacion'] = df_objetivos['id_tipo_perforacion'].map(tipos_dict)
+        df_objetivos['familia'] = df_objetivos['id_familia'].map(familias_dict)
+        df_objetivos['cliente'] = df_objetivos['id_cliente'].map(clientes_dict)
+        df_objetivos['cliente'] = df_objetivos['cliente'].fillna('(Todos)')
+        
+        df_show = df_objetivos[['id', 'contrato', 'cliente', 'tipo_perforacion', 'familia', 'objetivo', 'periodo_desde', 'periodo_hasta', 'observacion']]
         df_show.columns = ['ID', 'Contrato', 'Cliente', 'Tipo Perf.', 'Familia', 'Objetivo', 'Desde', 'Hasta', 'Observación']
         st.dataframe(df_show, use_container_width=True, hide_index=True)
         
@@ -783,18 +764,14 @@ with tab6:
             objetivo_id = st.number_input("ID del Objetivo a eliminar", min_value=1, step=1, key="delete_objetivo_id")
             if st.button("Eliminar Objetivo", type="secondary"):
                 try:
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM objetivos WHERE id = ?", (objetivo_id,))
-                    conn.commit()
+                    supabase = get_supabase()
+                    supabase.table('objetivos').delete().eq('id', objetivo_id).execute()
                     st.success(f"✅ Objetivo ID {objetivo_id} eliminado correctamente")
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
     else:
         st.info("📌 No hay objetivos registrados. Use el formulario superior para agregar.")
-
-
-
 
 # ====================================================================
 # TAB 7: TARIFAS
@@ -805,8 +782,6 @@ with tab7:
     # ================================================================
     # KEY DINÁMICA PARA EVITAR CACHÉ DE STREAMLIT
     # ================================================================
-    import time
-    import hashlib
     
     # Generar una key única basada en el tiempo
     if 'tab7_init_time' not in st.session_state:
@@ -820,11 +795,11 @@ with tab7:
     # ================================================================
     @st.cache_data(ttl=60)
     def cargar_contratos_tarifa():
-        return pd.read_sql("SELECT id, nombre FROM contratos WHERE activo = 1 ORDER BY id", conn)
+        return run_query("contratos", select="id, nombre", filters={"activo": 1})
     
     @st.cache_data(ttl=60)
     def cargar_tipos_tarifa():
-        return pd.read_sql("SELECT id, nombre FROM tipo_perforacion WHERE activo = 1 ORDER BY nombre", conn)
+        return run_query("tipo_perforacion", select="id, nombre", filters={"activo": 1})
     
     df_cont = cargar_contratos_tarifa()
     df_tipos = cargar_tipos_tarifa()
@@ -853,12 +828,8 @@ with tab7:
     # ================================================================
     # CARGAR CLIENTES DEL CONTRATO SELECCIONADO
     # ================================================================
-    df_clientes = pd.read_sql(f"""
-        SELECT id, nombre, codigo 
-        FROM clientes 
-        WHERE activo = 1 AND id_contrato = {id_contrato}
-        ORDER BY nombre
-    """, conn)
+    df_clientes = run_query("clientes", select="id, nombre, codigo",
+                           filters={"activo": 1, "id_contrato": id_contrato})
     
     # Crear diccionario de clientes para búsqueda fácil
     dict_clientes = {}
@@ -938,6 +909,7 @@ with tab7:
                 st.error("❌ Los campos marcados con * son obligatorios")
             else:
                 try:
+                    supabase = get_supabase()
                     # Obtener IDs
                     id_tipo = dict_tipos[tipo_nombre]
                     
@@ -950,22 +922,16 @@ with tab7:
                             st.warning(f"⚠️ Cliente '{cliente_label}' no encontrado")
                     
                     # Insertar en BD
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        INSERT INTO tarifas 
-                        (id_contrato, id_cliente, id_tipo_perforacion, tarifa, 
-                         periodo_desde, periodo_hasta, observacion)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        id_contrato, 
-                        id_cliente, 
-                        id_tipo, 
-                        tarifa_valor,
-                        fecha_desde.strftime('%Y-%m-%d'),
-                        fecha_hasta.strftime('%Y-%m-%d') if fecha_hasta else None,
-                        observacion if observacion else None
-                    ))
-                    conn.commit()
+                    data = {
+                        'id_contrato': id_contrato,
+                        'id_cliente': id_cliente,
+                        'id_tipo_perforacion': id_tipo,
+                        'tarifa': tarifa_valor,
+                        'periodo_desde': fecha_desde.strftime('%Y-%m-%d'),
+                        'periodo_hasta': fecha_hasta.strftime('%Y-%m-%d') if fecha_hasta else None,
+                        'observacion': observacion if observacion else None
+                    }
+                    supabase.table('tarifas').insert(data).execute()
                     
                     st.success("✅ Tarifa guardada correctamente")
                     
@@ -982,27 +948,25 @@ with tab7:
     st.markdown("---")
     st.markdown("#### 💰 Tarifas Registradas")
     
-    df_tarifas = pd.read_sql("""
-        SELECT t.id,
-               co.nombre as contrato,
-               cl.nombre as cliente,
-               tp.nombre as tipo_perforacion,
-               t.tarifa,
-               t.periodo_desde,
-               t.periodo_hasta,
-               t.observacion
-        FROM tarifas t
-        JOIN contratos co ON t.id_contrato = co.id
-        JOIN tipo_perforacion tp ON t.id_tipo_perforacion = tp.id
-        LEFT JOIN clientes cl ON t.id_cliente = cl.id
-        ORDER BY t.periodo_desde DESC
-        LIMIT 100
-    """, conn)
+    df_tarifas = run_query("tarifas", select="id, id_contrato, id_cliente, id_tipo_perforacion, tarifa, periodo_desde, periodo_hasta, observacion")
     
     if not df_tarifas.empty:
-        df_show = df_tarifas.copy()
-        df_show['cliente'] = df_show['cliente'].fillna('(Todos)')
-        df_show['tarifa'] = df_show['tarifa'].apply(lambda x: f"S/. {x:,.2f}")
+        # Obtener nombres
+        df_contratos_nombres = run_query("contratos", select="id, nombre")
+        df_tipos_nombres = run_query("tipo_perforacion", select="id, nombre")
+        df_clientes_nombres = run_query("clientes", select="id, nombre")
+        
+        contratos_dict = dict(zip(df_contratos_nombres['id'], df_contratos_nombres['nombre']))
+        tipos_dict = dict(zip(df_tipos_nombres['id'], df_tipos_nombres['nombre']))
+        clientes_dict = dict(zip(df_clientes_nombres['id'], df_clientes_nombres['nombre']))
+        
+        df_tarifas['contrato'] = df_tarifas['id_contrato'].map(contratos_dict)
+        df_tarifas['tipo_perforacion'] = df_tarifas['id_tipo_perforacion'].map(tipos_dict)
+        df_tarifas['cliente'] = df_tarifas['id_cliente'].map(clientes_dict)
+        df_tarifas['cliente'] = df_tarifas['cliente'].fillna('(Todos)')
+        df_tarifas['tarifa'] = df_tarifas['tarifa'].apply(lambda x: f"S/. {x:,.2f}")
+        
+        df_show = df_tarifas[['id', 'contrato', 'cliente', 'tipo_perforacion', 'tarifa', 'periodo_desde', 'periodo_hasta', 'observacion']]
         df_show.columns = ['ID', 'Contrato', 'Cliente', 'Tipo Perf.', 'Tarifa', 'Desde', 'Hasta', 'Observación']
         st.dataframe(df_show, use_container_width=True, hide_index=True)
         
@@ -1011,9 +975,8 @@ with tab7:
             tarifa_id = st.number_input("ID de la Tarifa a eliminar", min_value=1, step=1, key="delete_tarifa_id")
             if st.button("Eliminar Tarifa", type="secondary"):
                 try:
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM tarifas WHERE id = ?", (tarifa_id,))
-                    conn.commit()
+                    supabase = get_supabase()
+                    supabase.table('tarifas').delete().eq('id', tarifa_id).execute()
                     st.success(f"✅ Tarifa ID {tarifa_id} eliminada correctamente")
                     st.rerun()
                 except Exception as e:
@@ -1092,34 +1055,30 @@ with tab8:
                 st.error("Todos los campos son obligatorios")
             else:
                 try:
-                    cursor = conn.cursor()
+                    supabase = get_supabase()
                     
                     # Verificar si ya existe
-                    cursor.execute("""
-                        SELECT id FROM valores_por_defecto 
-                        WHERE id_contrato = ? AND id_cliente = ? AND id_concepto = ?
-                    """, (id_contrato_def, id_cliente_def, id_concepto_def))
+                    existing = supabase.table('valores_por_defecto').select('id').eq('id_contrato', id_contrato_def).eq('id_cliente', id_cliente_def).eq('id_concepto', id_concepto_def).execute()
                     
-                    existe = cursor.fetchone()
-                    
-                    if existe:
+                    if existing.data:
                         # Actualizar
-                        cursor.execute("""
-                            UPDATE valores_por_defecto 
-                            SET monto_cobrar_default = ?, monto_gasto_default = ?
-                            WHERE id_contrato = ? AND id_cliente = ? AND id_concepto = ?
-                        """, (monto_cobrar, monto_gasto, id_contrato_def, id_cliente_def, id_concepto_def))
+                        supabase.table('valores_por_defecto').update({
+                            'monto_cobrar_default': monto_cobrar,
+                            'monto_gasto_default': monto_gasto
+                        }).eq('id_contrato', id_contrato_def).eq('id_cliente', id_cliente_def).eq('id_concepto', id_concepto_def).execute()
                         st.success("✅ Valores por defecto actualizados")
                     else:
                         # Insertar
-                        cursor.execute("""
-                            INSERT INTO valores_por_defecto 
-                            (id_contrato, id_cliente, id_concepto, monto_cobrar_default, monto_gasto_default)
-                            VALUES (?, ?, ?, ?, ?)
-                        """, (id_contrato_def, id_cliente_def, id_concepto_def, monto_cobrar, monto_gasto))
+                        data = {
+                            'id_contrato': id_contrato_def,
+                            'id_cliente': id_cliente_def,
+                            'id_concepto': id_concepto_def,
+                            'monto_cobrar_default': monto_cobrar,
+                            'monto_gasto_default': monto_gasto
+                        }
+                        supabase.table('valores_por_defecto').insert(data).execute()
                         st.success("✅ Valores por defecto guardados")
                     
-                    conn.commit()
                     st.rerun()
                     
                 except Exception as e:
@@ -1134,25 +1093,26 @@ with tab8:
     # Lista de valores por defecto registrados
     st.markdown("#### 📋 Valores por Defecto Registrados")
     
-    df_defecto = pd.read_sql("""
-        SELECT 
-            vd.id,
-            ct.nombre as contrato,
-            cl.nombre as cliente,
-            cg.concepto,
-            vd.monto_cobrar_default,
-            vd.monto_gasto_default
-        FROM valores_por_defecto vd
-        JOIN contratos ct ON vd.id_contrato = ct.id
-        JOIN clientes cl ON vd.id_cliente = cl.id
-        JOIN conceptos_gastos cg ON vd.id_concepto = cg.id
-        ORDER BY ct.nombre, cl.nombre, cg.concepto
-    """, conn)
+    df_defecto = run_query("valores_por_defecto", select="id, id_contrato, id_cliente, id_concepto, monto_cobrar_default, monto_gasto_default")
     
     if not df_defecto.empty:
+        # Obtener nombres
+        df_contratos_nombres = run_query("contratos", select="id, nombre")
+        df_clientes_nombres = run_query("clientes", select="id, nombre")
+        df_conceptos_nombres = run_query("conceptos_gastos", select="id, concepto")
+        
+        contratos_dict = dict(zip(df_contratos_nombres['id'], df_contratos_nombres['nombre']))
+        clientes_dict = dict(zip(df_clientes_nombres['id'], df_clientes_nombres['nombre']))
+        conceptos_dict = dict(zip(df_conceptos_nombres['id'], df_conceptos_nombres['concepto']))
+        
+        df_defecto['contrato'] = df_defecto['id_contrato'].map(contratos_dict)
+        df_defecto['cliente'] = df_defecto['id_cliente'].map(clientes_dict)
+        df_defecto['concepto'] = df_defecto['id_concepto'].map(conceptos_dict)
+        
         df_show = df_defecto.copy()
         df_show['monto_cobrar_default'] = df_show['monto_cobrar_default'].apply(lambda x: f"S/. {x:,.2f}" if x else "-")
         df_show['monto_gasto_default'] = df_show['monto_gasto_default'].apply(lambda x: f"S/. {x:,.2f}" if x else "-")
+        df_show = df_show[['id', 'contrato', 'cliente', 'concepto', 'monto_cobrar_default', 'monto_gasto_default']]
         df_show.columns = ['ID', 'Contrato', 'Cliente', 'Concepto', 'Debo Cobrar (default)', 'Gasto (default)']
         st.dataframe(df_show, use_container_width=True, hide_index=True)
         
@@ -1172,9 +1132,8 @@ with tab8:
         if seleccion_eliminar and st.button("🗑️ Eliminar", use_container_width=True, key="btn_eliminar_def"):
             id_eliminar = opciones_eliminar[seleccion_eliminar]
             try:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM valores_por_defecto WHERE id = ?", (id_eliminar,))
-                conn.commit()
+                supabase = get_supabase()
+                supabase.table('valores_por_defecto').delete().eq('id', id_eliminar).execute()
                 st.success("✅ Valor por defecto eliminado")
                 st.rerun()
             except Exception as e:
@@ -1261,36 +1220,31 @@ with tab9:
                 st.error("Todos los campos son obligatorios")
             else:
                 try:
-                    cursor = conn.cursor()
+                    supabase = get_supabase()
                     
                     # Verificar si ya existe
-                    cursor.execute("""
-                        SELECT id FROM liquidacion_gastos 
-                        WHERE id_contrato = ? AND id_cliente = ? 
-                          AND id_concepto = ? AND periodo = ?
-                    """, (id_contrato_liq, id_cliente_liq, id_concepto_liq, periodo_liq))
+                    existing = supabase.table('liquidacion_gastos').select('id').eq('id_contrato', id_contrato_liq).eq('id_cliente', id_cliente_liq).eq('id_concepto', id_concepto_liq).eq('periodo', periodo_liq).execute()
                     
-                    existe = cursor.fetchone()
-                    
-                    if existe:
+                    if existing.data:
                         # Actualizar
-                        cursor.execute("""
-                            UPDATE liquidacion_gastos 
-                            SET monto_cobrado = ?, monto_real = ?
-                            WHERE id_contrato = ? AND id_cliente = ? 
-                              AND id_concepto = ? AND periodo = ?
-                        """, (monto_cobrado, monto_real, id_contrato_liq, id_cliente_liq, id_concepto_liq, periodo_liq))
+                        supabase.table('liquidacion_gastos').update({
+                            'monto_cobrado': monto_cobrado,
+                            'monto_real': monto_real
+                        }).eq('id_contrato', id_contrato_liq).eq('id_cliente', id_cliente_liq).eq('id_concepto', id_concepto_liq).eq('periodo', periodo_liq).execute()
                         st.success(f"✅ Liquidación actualizada para {periodo_liq}")
                     else:
                         # Insertar
-                        cursor.execute("""
-                            INSERT INTO liquidacion_gastos 
-                            (id_contrato, id_cliente, id_concepto, periodo, monto_cobrado, monto_real)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """, (id_contrato_liq, id_cliente_liq, id_concepto_liq, periodo_liq, monto_cobrado, monto_real))
+                        data = {
+                            'id_contrato': id_contrato_liq,
+                            'id_cliente': id_cliente_liq,
+                            'id_concepto': id_concepto_liq,
+                            'periodo': periodo_liq,
+                            'monto_cobrado': monto_cobrado,
+                            'monto_real': monto_real
+                        }
+                        supabase.table('liquidacion_gastos').insert(data).execute()
                         st.success(f"✅ Liquidación guardada para {periodo_liq}")
                     
-                    conn.commit()
                     st.rerun()
                     
                 except Exception as e:
@@ -1305,30 +1259,29 @@ with tab9:
     # ===== LISTA DE LIQUIDACIONES REGISTRADAS =====
     st.markdown("#### 📋 Liquidaciones Registradas")
     
-    df_liquidaciones = pd.read_sql("""
-        SELECT 
-            lg.id,
-            ct.nombre as contrato,
-            cl.nombre as cliente,
-            cg.concepto,
-            lg.periodo,
-            lg.monto_cobrado,
-            lg.monto_real,
-            (lg.monto_cobrado - lg.monto_real) as diferencia
-        FROM liquidacion_gastos lg
-        JOIN contratos ct ON lg.id_contrato = ct.id
-        JOIN clientes cl ON lg.id_cliente = cl.id
-        JOIN conceptos_gastos cg ON lg.id_concepto = cg.id
-        ORDER BY lg.periodo DESC, ct.nombre, cl.nombre
-        LIMIT 100
-    """, conn)
+    df_liquidaciones = run_query("liquidacion_gastos", select="id, id_contrato, id_cliente, id_concepto, periodo, monto_cobrado, monto_real")
     
     if not df_liquidaciones.empty:
+        # Obtener nombres
+        df_contratos_nombres = run_query("contratos", select="id, nombre")
+        df_clientes_nombres = run_query("clientes", select="id, nombre")
+        df_conceptos_nombres = run_query("conceptos_gastos", select="id, concepto")
+        
+        contratos_dict = dict(zip(df_contratos_nombres['id'], df_contratos_nombres['nombre']))
+        clientes_dict = dict(zip(df_clientes_nombres['id'], df_clientes_nombres['nombre']))
+        conceptos_dict = dict(zip(df_conceptos_nombres['id'], df_conceptos_nombres['concepto']))
+        
+        df_liquidaciones['contrato'] = df_liquidaciones['id_contrato'].map(contratos_dict)
+        df_liquidaciones['cliente'] = df_liquidaciones['id_cliente'].map(clientes_dict)
+        df_liquidaciones['concepto'] = df_liquidaciones['id_concepto'].map(conceptos_dict)
+        df_liquidaciones['diferencia'] = df_liquidaciones['monto_cobrado'] - df_liquidaciones['monto_real']
+        
         # Mostrar tabla
         df_show = df_liquidaciones.copy()
         df_show['monto_cobrado'] = df_show['monto_cobrado'].apply(lambda x: f"S/. {x:,.2f}" if x else "-")
         df_show['monto_real'] = df_show['monto_real'].apply(lambda x: f"S/. {x:,.2f}" if x else "-")
         df_show['diferencia'] = df_show['diferencia'].apply(lambda x: f"S/. {x:,.2f}" if x else "-")
+        df_show = df_show[['id', 'contrato', 'cliente', 'concepto', 'periodo', 'monto_cobrado', 'monto_real', 'diferencia']]
         df_show.columns = ['ID', 'Contrato', 'Cliente', 'Concepto', 'Período', 'Monto Cobrar', 'Monto Real', 'Diferencia']
         
         st.dataframe(df_show, use_container_width=True, hide_index=True)
@@ -1375,13 +1328,11 @@ with tab9:
             with col_edit1:
                 if st.button("💾 Actualizar", use_container_width=True, key="btn_actualizar_liq"):
                     try:
-                        cursor = conn.cursor()
-                        cursor.execute("""
-                            UPDATE liquidacion_gastos 
-                            SET monto_cobrado = ?, monto_real = ?
-                            WHERE id = ?
-                        """, (nuevo_cobrado, nuevo_real, id_seleccionado))
-                        conn.commit()
+                        supabase = get_supabase()
+                        supabase.table('liquidacion_gastos').update({
+                            'monto_cobrado': nuevo_cobrado,
+                            'monto_real': nuevo_real
+                        }).eq('id', id_seleccionado).execute()
                         st.success("✅ Liquidación actualizada correctamente")
                         st.rerun()
                     except Exception as e:
@@ -1390,15 +1341,15 @@ with tab9:
             with col_edit2:
                 if st.button("🗑️ Eliminar", use_container_width=True, key="btn_eliminar_liq"):
                     try:
-                        cursor = conn.cursor()
-                        cursor.execute("DELETE FROM liquidacion_gastos WHERE id = ?", (id_seleccionado,))
-                        conn.commit()
+                        supabase = get_supabase()
+                        supabase.table('liquidacion_gastos').delete().eq('id', id_seleccionado).execute()
                         st.success("✅ Liquidación eliminada correctamente")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
     else:
         st.info("No hay liquidaciones registradas")
+
 # ============================================================================
 # FOOTER
 # ============================================================================

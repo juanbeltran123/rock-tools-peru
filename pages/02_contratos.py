@@ -450,7 +450,7 @@ with tab1:
     datos_grafico = []
     for _, contrato in contratos.iterrows():
         df_cont = run_query("vw_general_semanal",
-                           select="ingresos, costos, otros_costos",
+                           select="tipo,ingresos, costos, otros_costos",
                            filters={**filtros_base, "id_contrato": contrato['id'], "tipo": ["CPM", "VENTA", "AFILADORAS"]})
         
         if filtro_semana_valor is not None:
@@ -532,7 +532,7 @@ with tab1:
     
     for _, contrato in contratos.iterrows():
         df_detalle = run_query("vw_general_semanal",
-                              select="ingresos, costos, otros_costos",
+                              select="tipo,ingresos, costos, otros_costos",
                               filters={**filtros_base, "id_contrato": contrato['id'], "tipo": ["CPM", "VENTA", "AFILADORAS"]})
         
         if filtro_semana_valor is not None:
@@ -884,7 +884,7 @@ with tab2:
             })
             
             st.dataframe(
-                df_cpm_display.style.applymap(color_margen, subset=['Margen %']).set_properties(**{
+                df_cpm_display.style.map(color_margen, subset=['Margen %']).set_properties(**{
                     'text-align': 'center',
                     'padding': '8px'
                 }).set_table_styles([
@@ -994,7 +994,7 @@ with tab2:
             })
             
             st.dataframe(
-                df_venta_display.style.applymap(color_margen, subset=['Margen %']).set_properties(**{
+                df_venta_display.style.map(color_margen, subset=['Margen %']).set_properties(**{
                     'text-align': 'center',
                     'padding': '8px'
                 }).set_table_styles([
@@ -1101,7 +1101,7 @@ with tab2:
                         'RENDIMIENTO': '{:.2f}',
                         'OBJETIVO': '{:.2f}',
                         'EFICIENCIA': '{:.1f}%'
-                    }).applymap(color_eficiencia_val, subset=['EFICIENCIA']).set_properties(**{
+                    }).map(color_eficiencia_val, subset=['EFICIENCIA']).set_properties(**{
                         'text-align': 'center',
                         'padding': '8px'
                     }).set_table_styles([
@@ -1125,12 +1125,12 @@ with tab3:
         st.markdown("#### Evolución Semanal (Acumulado por período)")
         
         # ===== FILTROS COMPACTOS (3 columnas) =====
-        periodos_todos_evo = run_query("vw_general_semanal", select="periodo", filters={"tipo_reporte": "AVANCE"})
+        periodos_todos_evo = run_query("vw_general_semanal", select="periodo", filters={"tipo_reporte": "CIERRE"})
         periodos_todos_evo = periodos_todos_evo['periodo'].unique().tolist() if not periodos_todos_evo.empty else []
         periodos_todos_evo.sort(reverse=True)
         
         if not periodos_todos_evo:
-            st.warning("⚠️ No hay períodos con datos de AVANCE")
+            st.warning("⚠️ No hay períodos con datos de CIERRE")
             st.stop()
         
         col_f1, col_f2, col_f3 = st.columns(3)
@@ -1146,7 +1146,7 @@ with tab3:
         contratos_con_datos_evo = run_query("contratos", select="id, nombre", filters={"activo": 1})
         df_contratos_evo = run_query("vw_general_semanal", 
                                      select="id_contrato",
-                                     filters={"periodo": periodo_evo, "tipo_reporte": "AVANCE"})
+                                     filters={"periodo": periodo_evo, "tipo_reporte": "CIERRE"})
         ids_con_datos_evo = df_contratos_evo['id_contrato'].unique().tolist() if not df_contratos_evo.empty else []
         contratos_con_datos_evo = contratos_con_datos_evo[contratos_con_datos_evo['id'].isin(ids_con_datos_evo)] if ids_con_datos_evo else pd.DataFrame()
         
@@ -1182,7 +1182,7 @@ with tab3:
         
         # ===== CONSTRUIR FILTROS =====
         filtros_evolucion = {"id_contrato": id_contrato, "periodo": periodo_evo, 
-                            "tipo": "CPM", "tipo_reporte": "AVANCE"}
+                            "tipo": "CPM", "tipo_reporte": "CIERRE"}
         if id_cliente:
             filtros_evolucion["id_cliente"] = id_cliente
         
@@ -1227,7 +1227,7 @@ with tab3:
             
             st.markdown("<br>", unsafe_allow_html=True)
             
-            # Gráfico de evolución semanal (mejorado)
+            # Gráfico de evolución semanal
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=df_evolucion['semana'],
@@ -1254,7 +1254,7 @@ with tab3:
             )
             st.plotly_chart(fig, use_container_width=True)
             
-            # Tabla detallada (con colores en margen %)
+            # Tabla detallada
             st.markdown("#### 📋 Detalle Semanal")
             
             df_tabla = df_evolucion[['semana', 'ingresos', 'costos_totales', 'margen', 'margen_pct']]
@@ -1280,7 +1280,7 @@ with tab3:
             df_tabla['Margen %'] = df_tabla['Margen %'].apply(lambda x: f"{x:.1f}%")
             
             st.dataframe(
-                df_tabla.style.applymap(color_margen_tabla, subset=['Margen %']).set_properties(**{
+                df_tabla.style.map(color_margen_tabla, subset=['Margen %']).set_properties(**{
                     'text-align': 'center',
                     'padding': '8px'
                 }).set_table_styles([
@@ -1302,6 +1302,8 @@ with tab3:
         periodos_disponibles_mensual = periodos_disponibles_mensual['periodo'].unique().tolist() if not periodos_disponibles_mensual.empty else []
         periodos_disponibles_mensual.sort(reverse=True)
         
+        st.write(f"🔍 DEBUG - periodos_disponibles_mensual: {periodos_disponibles_mensual}")
+        
         if not periodos_disponibles_mensual:
             st.warning("⚠️ No hay períodos con datos de CIERRE")
             st.stop()
@@ -1320,29 +1322,39 @@ with tab3:
             if "TODOS" in periodos_seleccionados:
                 periodos_seleccionados = periodos_disponibles_mensual
         
+        st.write(f"🔍 DEBUG - periodos_seleccionados: {periodos_seleccionados}")
+        
         if not periodos_seleccionados:
             st.warning("⚠️ Seleccione al menos un período")
             st.stop()
         
         # Contratos con datos
-        contratos_con_datos_mensual = run_query("contratos", select="id, nombre", filters={"activo": 1})
         df_contratos_mensual = run_query("vw_general_semanal", 
                                         select="id_contrato",
                                         filters={"periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
-        ids_con_datos_mensual = df_contratos_mensual['id_contrato'].unique().tolist() if not df_contratos_mensual.empty else []
-        contratos_con_datos_mensual = contratos_con_datos_mensual[contratos_con_datos_mensual['id'].isin(ids_con_datos_mensual)] if ids_con_datos_mensual else pd.DataFrame()
         
-        if contratos_con_datos_mensual.empty:
+        st.write(f"🔍 DEBUG - df_contratos_mensual vacío?: {df_contratos_mensual.empty}")
+        if not df_contratos_mensual.empty:
+            st.write(f"🔍 DEBUG - ids encontrados: {df_contratos_mensual['id_contrato'].unique().tolist()}")
+        
+        ids_con_datos_mensual = df_contratos_mensual['id_contrato'].unique().tolist() if not df_contratos_mensual.empty else []
+        
+        df_contratos_nombres = run_query("contratos", select="id, nombre", filters={"activo": 1})
+        df_contratos_nombres = df_contratos_nombres[df_contratos_nombres['id'].isin(ids_con_datos_mensual)] if ids_con_datos_mensual else pd.DataFrame()
+        
+        st.write(f"🔍 DEBUG - contratos con datos: {df_contratos_nombres['nombre'].tolist() if not df_contratos_nombres.empty else []}")
+        
+        if df_contratos_nombres.empty:
             st.warning(f"⚠️ No hay contratos con datos CIERRE en los períodos seleccionados")
             st.stop()
         
         with col_m2:
             contrato_nombre = st.selectbox(
                 "📋 Contrato",
-                contratos_con_datos_mensual['nombre'].tolist(),
+                df_contratos_nombres['nombre'].tolist(),
                 key="evo_mensual_contrato"
             )
-            id_contrato = contratos_con_datos_mensual[contratos_con_datos_mensual['nombre'] == contrato_nombre]['id'].iloc[0]
+            id_contrato = df_contratos_nombres[df_contratos_nombres['nombre'] == contrato_nombre]['id'].iloc[0]
         
         # Clientes
         clientes_mensual = run_query("clientes", select="id, nombre, codigo", 
@@ -1361,15 +1373,32 @@ with tab3:
         
         st.markdown("---")
         
-        # ===== CONSTRUIR FILTROS =====
-        filtros_mensual = {"id_contrato": id_contrato, "periodo": periodos_seleccionados,
-                          "tipo": "CPM", "tipo_reporte": "CIERRE"}
-        if id_cliente:
-            filtros_mensual["id_cliente"] = id_cliente
+        # ===== OBTENER DATOS PARA CADA PERÍODO INDIVIDUALMENTE =====
+        df_mensual_lista = []
         
-        df_mensual = run_query("vw_general_semanal",
-                              select="periodo, ingresos, costos, otros_costos",
-                              filters=filtros_mensual)
+        for periodo in periodos_seleccionados:
+            filtros_temp = {
+                "id_contrato": id_contrato,
+                "periodo": periodo,
+                "tipo": "CPM",
+                "tipo_reporte": "CIERRE"
+            }
+            if id_cliente:
+                filtros_temp["id_cliente"] = id_cliente
+            
+            df_temp = run_query("vw_general_semanal",
+                               select="periodo, ingresos, costos, otros_costos",
+                               filters=filtros_temp)
+            
+            if not df_temp.empty:
+                df_mensual_lista.append(df_temp)
+        
+        st.write(f"🔍 DEBUG - períodos con datos: {len(df_mensual_lista)}")
+        
+        if df_mensual_lista:
+            df_mensual = pd.concat(df_mensual_lista, ignore_index=True)
+        else:
+            df_mensual = pd.DataFrame()
         
         if not df_mensual.empty:
             # Calcular márgenes
@@ -1414,7 +1443,7 @@ with tab3:
             
             st.markdown("<br>", unsafe_allow_html=True)
             
-            # Gráfico de barras comparativo (mejorado)
+            # Gráfico de barras comparativo
             fig = go.Figure()
             fig.add_trace(go.Bar(
                 x=df_mensual_grouped['periodo'],
@@ -1440,7 +1469,7 @@ with tab3:
             )
             st.plotly_chart(fig, use_container_width=True)
             
-            # Tabla resumen (con colores en margen %)
+            # Tabla resumen
             st.markdown("#### 📋 Resumen por Período")
             
             df_tabla = df_mensual_grouped[['periodo', 'ingresos', 'costos_totales', 'margen', 'margen_pct']]
@@ -1464,7 +1493,7 @@ with tab3:
             df_tabla['Estado'] = df_tabla['Margen %'].apply(estado_margen)
             
             st.dataframe(
-                df_tabla.style.applymap(color_margen_tabla, subset=['Margen %']).set_properties(**{
+                df_tabla.style.map(color_margen_tabla, subset=['Margen %']).set_properties(**{
                     'text-align': 'center',
                     'padding': '8px'
                 }).set_table_styles([
@@ -1576,68 +1605,99 @@ with tab4:
         st.warning("⚠️ No hay datos disponibles para los filtros seleccionados")
         st.stop()
     
-    filtros_metros = {"id_contrato": id_contrato_analisis, "periodo": periodos_seleccionados, "tipo_operacion": "CPM"}
-    
-    if id_cliente_analisis:
-        filtros_metros["id_cliente"] = id_cliente_analisis
-    
     if semana_analisis == "CIERRE":
-        filtros_metros["tipo_reporte"] = "CIERRE"
+        semana_valor = None
+        tipo_reporte = "CIERRE"
     else:
         semana_valor = int(semana_analisis)
-        filtros_metros["tipo_reporte"] = "AVANCE"
-        filtros_metros["semana"] = semana_valor
+        tipo_reporte = "AVANCE"
     
-    # ===== 1. OBTENER METROS (desde perforación, SIN vw_general_semanal) =====
-    df_perforacion = run_query("perforacion_general", select="id, id_tipo_perforacion",
-                              filters={k: v for k, v in filtros_metros.items() if k != 'periodo'})
+
     
-    if not df_perforacion.empty:
+    # ===== 1. OBTENER METROS (iterando por período) =====
+    df_perforacion_lista = []
+    
+    for periodo in periodos_seleccionados:
+        filtros_temp = {
+            "id_contrato": id_contrato_analisis,
+            "periodo": periodo,
+            "tipo_operacion": "CPM",
+            "tipo_reporte": tipo_reporte
+        }
+        if id_cliente_analisis:
+            filtros_temp["id_cliente"] = id_cliente_analisis
+        if semana_valor:
+            filtros_temp["semana"] = semana_valor
+        
+        df_temp = run_query("perforacion_general", select="id, id_tipo_perforacion", filters=filtros_temp)
+        
+        if not df_temp.empty:
+            df_perforacion_lista.append(df_temp)
+    
+    
+    if df_perforacion_lista:
+        df_perforacion = pd.concat(df_perforacion_lista, ignore_index=True)
+        
+        
         ids_perforacion = df_perforacion['id'].tolist()
         df_perforacion_detalle = run_query("perforacion_detalle", select="id_perforacion_general, total_mp",
                                           filters={"id_perforacion_general": ids_perforacion})
         
-        # Agrupar metros por tipo_perforacion
-        df_metros = df_perforacion.merge(df_perforacion_detalle, left_on='id', right_on='id_perforacion_general')
-        df_metros = df_metros.groupby('id_tipo_perforacion')['total_mp'].sum().reset_index()
-        df_metros.columns = ['id_tipo_perforacion', 'metros_totales']
+        if not df_perforacion_detalle.empty:
+            df_metros = df_perforacion.merge(df_perforacion_detalle, left_on='id', right_on='id_perforacion_general')
+            df_metros = df_metros.groupby('id_tipo_perforacion')['total_mp'].sum().reset_index()
+            df_metros.columns = ['id_tipo_perforacion', 'metros_totales']
+            
+        else:
+            df_metros = pd.DataFrame()
+            st.warning("⚠️ No hay detalles de perforación")
     else:
+        df_perforacion = pd.DataFrame()
         df_metros = pd.DataFrame()
+        st.warning("⚠️ No se encontraron datos de perforación")
     
-    # ===== 2. OBTENER COSTOS CPM (desde vw_general_semanal) =====
-    filtros_costos = {"tipo": "CPM", "id_contrato": id_contrato_analisis, 
-                     "periodo": periodos_seleccionados}
+    # ===== 2. OBTENER COSTOS CPM (iterando por período) =====
+    df_costos_lista = []
     
-    if id_cliente_analisis:
-        filtros_costos["id_cliente"] = id_cliente_analisis
+    for periodo in periodos_seleccionados:
+        filtros_temp = {
+            "tipo": "CPM",
+            "id_contrato": id_contrato_analisis,
+            "periodo": periodo,
+            "tipo_reporte": tipo_reporte
+        }
+        if id_cliente_analisis:
+            filtros_temp["id_cliente"] = id_cliente_analisis
+        if semana_valor:
+            filtros_temp["semana"] = semana_valor
+        
+        df_temp = run_query("vw_general_semanal",
+                           select="id_tipo_perforacion, costos",
+                           filters=filtros_temp)
+        
+        if not df_temp.empty:
+            df_costos_lista.append(df_temp)
     
-    if semana_analisis == "CIERRE":
-        filtros_costos["tipo_reporte"] = "CIERRE"
-    else:
-        filtros_costos["tipo_reporte"] = "AVANCE"
-        filtros_costos["semana"] = semana_valor
     
-    df_costos = run_query("vw_general_semanal",
-                         select="id_tipo_perforacion, costos",
-                         filters=filtros_costos)
     
-    if not df_costos.empty:
+    if df_costos_lista:
+        df_costos = pd.concat(df_costos_lista, ignore_index=True)
         df_costos = df_costos.groupby('id_tipo_perforacion')['costos'].sum().reset_index()
         df_costos.columns = ['id_tipo_perforacion', 'costo_total']
+        
     else:
         df_costos = pd.DataFrame()
+        st.warning("⚠️ No se encontraron datos de costos")
     
     # ===== 3. OBTENER TARIFAS =====
-    # Obtener período máximo y mínimo para tarifas
-    max_periodo = max(periodos_seleccionados) if periodos_seleccionados else None
-    min_periodo = min(periodos_seleccionados) if periodos_seleccionados else None
-    
     filtros_tarifas = {"id_contrato": id_contrato_analisis}
     if id_cliente_analisis:
         filtros_tarifas["id_cliente"] = id_cliente_analisis
     
     df_tarifas = run_query("tarifas", select="id_tipo_perforacion, tarifa",
                           filters=filtros_tarifas)
+    
+    
     
     # Crear diccionarios
     metros_dict = {}
@@ -1661,6 +1721,8 @@ with tab4:
     
     # ===== COMBINAR TODOS LOS TIPOS =====
     todos_los_tipos = set(metros_dict.keys()) | set(costo_dict.keys()) | set(tarifa_dict.keys())
+    
+    
     
     datos_analisis = []
     

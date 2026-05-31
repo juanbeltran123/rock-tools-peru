@@ -2,6 +2,7 @@ import streamlit as st
 from supabase import create_client
 import pandas as pd
 import os
+from typing import Optional, Dict, List, Any
 # ============================================================================
 # CONEXIÓN A SUPABASE
 # ============================================================================
@@ -29,36 +30,59 @@ def get_supabase():
 # ============================================================================
 
 @st.cache_data(ttl=600)
-def run_query(table, select="*", filters=None, limit=None, order_by=None):
+def run_query(
+    table_name: str, 
+    select: str = "*", 
+    filters: Optional[Dict[str, Any]] = None,
+    order_by: Optional[str] = None,
+    ascending: bool = True
+) -> pd.DataFrame:
     """
-    Consulta genérica a Supabase.
+    Ejecuta consulta SELECT en Supabase y retorna DataFrame
     
-    Parámetros:
-    - table: nombre de la tabla o vista (ej: "costos", "vw_venta")
-    - select: columnas a seleccionar (ej: "*", "id,nombre")
-    - filters: diccionario con filtros (ej: {"id_contrato": 1})
-    - limit: número máximo de registros (ej: 100)
-    - order_by: columna para ordenar (ej: "periodo.desc")
-    
-    Retorna:
-    - pandas.DataFrame con los datos
+    Args:
+        table_name: Nombre de la tabla o vista
+        select: Columnas a seleccionar (ej: "*", "id,nombre")
+        filters: Diccionario con filtros {columna: valor}
+                 Si el valor es una lista, hace IN
+                 Si el valor es un string con operador (ej: ">0"), aplica condición
+        order_by: Columna para ordenar
+        ascending: Orden ascendente o descendente
     """
     supabase = get_supabase()
-    query = supabase.table(table).select(select)
+    
+    # Iniciar consulta
+    query = supabase.table(table_name).select(select)
     
     # Aplicar filtros
     if filters:
-        for key, value in filters.items():
-            query = query.eq(key, value)
+        for col, val in filters.items():
+            if isinstance(val, list):
+                # Si es lista, usar IN
+                if val:
+                    query = query.in_(col, val)
+            elif isinstance(val, str):
+                # Verificar si tiene operador
+                if val.startswith('>'):
+                    query = query.gt(col, float(val[1:]))
+                elif val.startswith('>='):
+                    query = query.gte(col, float(val[2:]))
+                elif val.startswith('<'):
+                    query = query.lt(col, float(val[1:]))
+                elif val.startswith('<='):
+                    query = query.lte(col, float(val[2:]))
+                elif val.startswith('!='):
+                    query = query.neq(col, val[2:])
+                else:
+                    query = query.eq(col, val)
+            else:
+                query = query.eq(col, val)
     
     # Aplicar ordenamiento
     if order_by:
-        query = query.order(order_by)
+        query = query.order(order_by, desc=not ascending)
     
-    # Aplicar límite
-    if limit:
-        query = query.limit(limit)
-    
+    # Ejecutar
     response = query.execute()
     
     if response.data:
@@ -107,6 +131,26 @@ def run_query_raw(table, select="*"):
         return pd.DataFrame()
 
 
+
+def run_insert(table_name: str, data: Dict[str, Any]) -> Dict:
+    """Inserta un registro en la tabla"""
+    supabase = get_supabase()
+    response = supabase.table(table_name).insert(data).execute()
+    return response.data[0] if response.data else None
+
+def run_delete(table_name: str, filters: Dict[str, Any]) -> bool:
+    """Elimina registros que cumplan los filtros"""
+    supabase = get_supabase()
+    query = supabase.table(table_name).delete()
+    
+    for col, val in filters.items():
+        if isinstance(val, list):
+            query = query.in_(col, val)
+        else:
+            query = query.eq(col, val)
+    
+    response = query.execute()
+    return len(response.data) > 0
 # ============================================================================
 # FUNCIONES AUXILIARES PARA FILTROS COMUNES
 # ============================================================================

@@ -14,35 +14,41 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Ocultar sidebar
+# Ocultar sidebar y estilos - MODIFICADO PARA ANCHO COMPLETO
 st.markdown("""
 <style>
     [data-testid="stSidebar"] {display: none;}
     [data-testid="collapsedControl"] {display: none;}
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+    
     .main > .block-container {
         padding-top: 0 !important;
-        padding-left: 2rem !important;
-        padding-right: 2rem !important;
-        max-width: 100%;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        max-width: 100% !important;
+        width: 100% !important;
     }
     
-    /* Estilos para tablas */
+    /* Forzar ancho completo */
+    .stDataFrame, .stPlotlyChart, div[data-testid="stVerticalBlock"] {
+        width: 100% !important;
+    }
+    
+    /* Tablas */
     .dataframe {
         font-size: 0.9rem;
+        width: 100% !important;
     }
-    .positive-margin {
-        color: #10b981;
-        font-weight: 600;
-    }
-    .negative-margin {
-        color: #ef4444;
-        font-weight: 600;
-    }
-            
+    
+    /* Centrar números en inputs */
     .stNumberInput input {
-    text-align: center !important;
+        text-align: center !important;
+    }
+    
+    /* Eliminar márgenes internos */
+    div[data-testid="column"] {
+        padding: 0 5px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -92,23 +98,18 @@ with header_cols[1]:
     with nav_cols[1]:
         if st.button("📄 Contratos", key="nav_cont", use_container_width=True):
             st.switch_page("pages/02_contratos.py")
-
     with nav_cols[2]:
         if st.button("📈 Resultados", key="nav_res", use_container_width=True):
             st.switch_page("pages/04_resultados_proyecciones.py")
-
     with nav_cols[3]:
         if st.button("📊 Análisis", use_container_width=True):
             st.switch_page("pages/07_analisis_avanzado.py")
-
     with nav_cols[4]:
         if st.button("📤 Cargas", key="nav_carg", use_container_width=True):
             st.switch_page("pages/03_cargas.py")    
-
     with nav_cols[5]:
         if st.button("📚 Maestros", key="nav_maes", use_container_width=True):
             st.switch_page("pages/05_maestros.py")
-
 
 with header_cols[2]:
     usuario = st.session_state.get('usuario', 'Usuario')
@@ -131,15 +132,16 @@ st.divider()
 # ============================================================================
 st.markdown("## 📈 Resultados y Proyecciones")
 st.markdown("Análisis financiero - Pasado, presente y futuro")
-
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ============================================================================
 # PESTAÑAS PRINCIPALES
 # ============================================================================
-
 tab1, tab2, tab3 = st.tabs(["📊 ESTADO DE RESULTADOS", "📈 PROYECCIONES", "💵 LIQUIDACIÓN"])
 
+# ============================================================================
+# TAB 1: ESTADO DE RESULTADOS
+# ============================================================================
 with tab1:
     st.markdown("### 📊 Estado de Resultados (Solo CIERRE)")
     st.caption("Los datos mostrados corresponden únicamente a CIERRE de cada período - valores finales")
@@ -162,10 +164,18 @@ with tab1:
         )
     
     with col_f2:
-        df_periodos = run_query("vw_general_semanal", 
-                               select="periodo",
-                               filters={"periodo": f"{año_seleccionado}-%", "tipo_reporte": "CIERRE"})
-        periodos_disponibles = df_periodos['periodo'].unique().tolist() if not df_periodos.empty else []
+        # Primero obtener todos los períodos disponibles
+        df_todos_periodos = run_query("vw_general_semanal", 
+                                      select="periodo",
+                                      filters={"tipo_reporte": "CIERRE"})
+        
+        if not df_todos_periodos.empty:
+            df_todos_periodos['año'] = df_todos_periodos['periodo'].str[:4]
+            df_periodos = df_todos_periodos[df_todos_periodos['año'] == año_seleccionado]
+            periodos_disponibles = df_periodos['periodo'].unique().tolist()
+        else:
+            periodos_disponibles = []
+        
         periodos_disponibles.sort()
         
         opciones_periodos = ["TODOS"] + periodos_disponibles
@@ -183,20 +193,20 @@ with tab1:
             st.warning("⚠️ Seleccione al menos un período")
             st.stop()
     
-    # Contratos con datos
-    df_contratos_con_datos = run_query("vw_general_semanal",
-                                       select="id_contrato",
-                                       filters={"periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
-    ids_con_datos = df_contratos_con_datos['id_contrato'].unique().tolist() if not df_contratos_con_datos.empty else []
-    
-    df_contratos_nombres = run_query("contratos", select="id, nombre", filters={"activo": 1})
-    df_contratos_nombres = df_contratos_nombres[df_contratos_nombres['id'].isin(ids_con_datos)] if ids_con_datos else pd.DataFrame()
-    
-    contrato_opciones_filtradas = {"TODOS": None}
-    for _, c in df_contratos_nombres.iterrows():
-        contrato_opciones_filtradas[c['nombre']] = c['id']
-    
     with col_f3:
+        # Contratos con datos
+        df_contratos_con_datos = run_query("vw_general_semanal",
+                                           select="id_contrato",
+                                           filters={"periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
+        ids_con_datos = df_contratos_con_datos['id_contrato'].unique().tolist() if not df_contratos_con_datos.empty else []
+        
+        df_contratos_nombres = run_query("contratos", select="id, nombre", filters={"activo": 1})
+        df_contratos_nombres = df_contratos_nombres[df_contratos_nombres['id'].isin(ids_con_datos)] if ids_con_datos else pd.DataFrame()
+        
+        contrato_opciones_filtradas = {"TODOS": None}
+        for _, c in df_contratos_nombres.iterrows():
+            contrato_opciones_filtradas[c['nombre']] = c['id']
+        
         contrato_seleccionado = st.selectbox(
             "📋 Contrato",
             list(contrato_opciones_filtradas.keys()),
@@ -300,23 +310,19 @@ with tab1:
         
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            with st.container(border=True):
-                st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>💰 Total Ingresos</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 1.5rem; font-weight: 700; color: #1152d4;'>${total_ingresos_gral:,.0f}</div>", unsafe_allow_html=True)
+            st.markdown("#### 💰 Total Ingresos")
+            st.markdown(f"# ${total_ingresos_gral:,.0f}")
         with col2:
-            with st.container(border=True):
-                st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>💸 Total Egresos</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 1.5rem; font-weight: 700; color: #ef4444;'>${total_egresos_gral:,.0f}</div>", unsafe_allow_html=True)
+            st.markdown("#### 💸 Total Egresos")
+            st.markdown(f"# ${total_egresos_gral:,.0f}")
         with col3:
-            with st.container(border=True):
-                st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>📊 Utilidad Neta</div>", unsafe_allow_html=True)
-                color = "#10b981" if utilidad_gral > 0 else "#ef4444"
-                st.markdown(f"<div style='text-align: center; font-size: 1.5rem; font-weight: 700; color: {color};'>${utilidad_gral:,.0f}</div>", unsafe_allow_html=True)
+            st.markdown("#### 📊 Utilidad Neta")
+            color = "#10b981" if utilidad_gral > 0 else "#ef4444"
+            st.markdown(f"# <span style='color: {color};'>${utilidad_gral:,.0f}</span>", unsafe_allow_html=True)
         with col4:
-            with st.container(border=True):
-                st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>🎯 Margen %</div>", unsafe_allow_html=True)
-                color_m = "#10b981" if margen_gral >= 42 else "#f59e0b" if margen_gral >= 30 else "#ef4444"
-                st.markdown(f"<div style='text-align: center; font-size: 1.5rem; font-weight: 700; color: {color_m};'>{margen_gral:.1f}%</div>", unsafe_allow_html=True)
+            st.markdown("#### 🎯 Margen %")
+            color_m = "#10b981" if margen_gral >= 42 else "#f59e0b" if margen_gral >= 30 else "#ef4444"
+            st.markdown(f"# <span style='color: {color_m};'>{margen_gral:.1f}%</span>", unsafe_allow_html=True)
         
         st.markdown("<br>", unsafe_allow_html=True)
         
@@ -332,14 +338,14 @@ with tab1:
             st.dataframe(df_show, use_container_width=True, hide_index=True)
             
             st.markdown("#### 📈 Márgenes por Contrato")
-            df_contratos = df_resumen.groupby('Contrato').agg({
+            df_contratos_res = df_resumen.groupby('Contrato').agg({
                 'Ingresos': 'sum',
                 'Egresos': 'sum',
                 'Utilidad': 'sum'
             }).reset_index()
-            df_contratos['Margen %'] = (df_contratos['Utilidad'] / df_contratos['Ingresos'] * 100).round(1)
+            df_contratos_res['Margen %'] = (df_contratos_res['Utilidad'] / df_contratos_res['Ingresos'] * 100).round(1)
             
-            fig = px.bar(df_contratos, x='Contrato', y='Margen %', 
+            fig = px.bar(df_contratos_res, x='Contrato', y='Margen %', 
                         color='Margen %',
                         color_continuous_scale=['#ef4444', '#f59e0b', '#10b981'],
                         range_color=[0, 50])
@@ -397,7 +403,6 @@ with tab1:
                 df_valores_defecto = run_query("conceptos_gastos", select="id, concepto", filters={"activo": 1})
                 df_valores_defecto = df_valores_defecto.sort_values('concepto')
                 
-                # Agregar valores por defecto
                 for idx, row in df_valores_defecto.iterrows():
                     df_valores_def = run_query("valores_por_defecto",
                                               select="monto_cobrar_default, monto_gasto_default",
@@ -437,7 +442,6 @@ with tab1:
                     
                     rows_tabla = []
                     
-                    # ===== CPM - NO EDITABLE (solo si > 0) =====
                     if cpm_debo > 0 or cpm_gasto > 0:
                         rows_tabla.append({
                             'Concepto': 'CPM',
@@ -447,7 +451,6 @@ with tab1:
                             'id_concepto': -1
                         })
                     
-                    # ===== VENTA - NO EDITABLE (solo si > 0) =====
                     if venta_debo > 0 or venta_gasto > 0:
                         rows_tabla.append({
                             'Concepto': 'Venta Directa',
@@ -457,7 +460,6 @@ with tab1:
                             'id_concepto': -2
                         })
                     
-                    # ===== AFILADORAS - NO EDITABLE (solo si > 0) =====
                     if afiladoras_gasto > 0:
                         rows_tabla.append({
                             'Concepto': 'Afiladoras',
@@ -467,7 +469,6 @@ with tab1:
                             'id_concepto': -3
                         })
                     
-                    # ===== OTROS CONCEPTOS - EDITABLES (solo si > 0) =====
                     for _, row in df_valores_defecto.iterrows():
                         id_concepto = row['id']
                         concepto = row['concepto']
@@ -487,18 +488,16 @@ with tab1:
                     if not rows_tabla:
                         st.info("No hay conceptos con valores para este cliente")
                     else:
-                        
-                        # ===== MOSTRAR TABLA (interfaz mejorada - centrada) =====
                         # Encabezados
                         col1, col2, col3, col4 = st.columns([2, 1.5, 1.5, 1.5])
                         with col1:
-                            st.markdown("<div style='text-align: center; font-weight: bold;'>CONCEPTO</div>", unsafe_allow_html=True)
+                            st.markdown("**CONCEPTO**")
                         with col2:
-                            st.markdown("<div style='text-align: center; font-weight: bold;'>INGRESOS</div>", unsafe_allow_html=True)
+                            st.markdown("**INGRESOS**")
                         with col3:
-                            st.markdown("<div style='text-align: center; font-weight: bold;'>GASTOS</div>", unsafe_allow_html=True)
+                            st.markdown("**GASTOS**")
                         with col4:
-                            st.markdown("<div style='text-align: center; font-weight: bold;'>DIFERENCIA</div>", unsafe_allow_html=True)
+                            st.markdown("**DIFERENCIA**")
                         
                         st.markdown("---")
                         
@@ -506,7 +505,7 @@ with tab1:
                             col1, col2, col3, col4 = st.columns([2, 1.5, 1.5, 1.5])
                             
                             with col1:
-                                st.markdown(f"<div style='text-align: center; font-weight: 500;'>{row_item['Concepto'].upper()}</div>", unsafe_allow_html=True)
+                                st.markdown(f"**{row_item['Concepto'].upper()}**")
                             
                             with col2:
                                 if row_item['es_editable']:
@@ -515,12 +514,12 @@ with tab1:
                                         value=float(row_item['Debo Cobrar']),
                                         step=100.0,
                                         format="%.2f",
-                                        key=f"res_deb_{row_item['id_concepto']}_{id_cliente}_{str(periodos_seleccionados)}_{idx}",
+                                        key=f"res_deb_{row_item['id_concepto']}_{id_cliente}_{idx}",
                                         label_visibility="collapsed"
                                     )
                                     rows_tabla[idx]['Debo Cobrar'] = nuevo_debo
                                 else:
-                                    st.markdown(f"<div style='text-align: center; font-weight: 500;'>${row_item['Debo Cobrar']:,.0f}</div>", unsafe_allow_html=True)
+                                    st.markdown(f"${row_item['Debo Cobrar']:,.0f}")
                             
                             with col3:
                                 if row_item['es_editable']:
@@ -529,19 +528,18 @@ with tab1:
                                         value=float(row_item['Gasto']),
                                         step=100.0,
                                         format="%.2f",
-                                        key=f"res_gas_{row_item['id_concepto']}_{id_cliente}_{str(periodos_seleccionados)}_{idx}",
+                                        key=f"res_gas_{row_item['id_concepto']}_{id_cliente}_{idx}",
                                         label_visibility="collapsed"
                                     )
                                     rows_tabla[idx]['Gasto'] = nuevo_gasto
                                 else:
-                                    st.markdown(f"<div style='text-align: center; font-weight: 500;'>${row_item['Gasto']:,.0f}</div>", unsafe_allow_html=True)
+                                    st.markdown(f"${row_item['Gasto']:,.0f}")
                             
                             with col4:
                                 diferencia = row_item['Debo Cobrar'] - row_item['Gasto']
                                 color = "#10b981" if diferencia >= 0 else "#ef4444"
-                                st.markdown(f"<div style='text-align: center; font-weight: bold; color: {color};'>${diferencia:,.0f}</div>", unsafe_allow_html=True)
+                                st.markdown(f"<span style='color: {color}; font-weight: bold;'>${diferencia:,.0f}</span>", unsafe_allow_html=True)
                         
-                        # ===== TOTALES =====
                         total_debo = sum(r['Debo Cobrar'] for r in rows_tabla)
                         total_gasto = sum(r['Gasto'] for r in rows_tabla)
                         total_diferencia = total_debo - total_gasto
@@ -549,22 +547,15 @@ with tab1:
                         st.markdown("---")
                         col_t1, col_t2, col_t3 = st.columns(3)
                         with col_t1:
-                            with st.container(border=True):
-                                st.markdown("<div style='text-align: center; font-size: 0.7rem; color: #64748b;'>💰 TOTAL DEBO COBRAR</div>", unsafe_allow_html=True)
-                                st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: 700;'>${total_debo:,.0f}</div>", unsafe_allow_html=True)
+                            st.markdown(f"**💰 TOTAL DEBO COBRAR:** ${total_debo:,.0f}")
                         with col_t2:
-                            with st.container(border=True):
-                                st.markdown("<div style='text-align: center; font-size: 0.7rem; color: #64748b;'>💸 TOTAL GASTO</div>", unsafe_allow_html=True)
-                                st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: 700;'>${total_gasto:,.0f}</div>", unsafe_allow_html=True)
+                            st.markdown(f"**💸 TOTAL GASTO:** ${total_gasto:,.0f}")
                         with col_t3:
-                            with st.container(border=True):
-                                st.markdown("<div style='text-align: center; font-size: 0.7rem; color: #64748b;'>📊 DIFERENCIA</div>", unsafe_allow_html=True)
-                                color = "#10b981" if total_diferencia >= 0 else "#ef4444"
-                                st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: 700; color: {color};'>${total_diferencia:,.0f}</div>", unsafe_allow_html=True)
+                            color = "#10b981" if total_diferencia >= 0 else "#ef4444"
+                            st.markdown(f"**📊 DIFERENCIA:** <span style='color: {color};'>${total_diferencia:,.0f}</span>", unsafe_allow_html=True)
                         
-                        # ===== GUARDAR (solo conceptos editables) =====
                         if any(r['es_editable'] for r in rows_tabla):
-                            if st.button("💾 Guardar Cambios", key=f"res_guardar_{id_cliente}_{str(periodos_seleccionados)}"):
+                            if st.button("💾 Guardar Cambios", key=f"res_guardar_{id_cliente}"):
                                 try:
                                     supabase = get_supabase()
                                     for row_item in rows_tabla:
@@ -592,7 +583,7 @@ with tab1:
                                                     }
                                                     supabase.table('liquidacion_real').insert(data).execute()
                                     
-                                    st.success(f"✅ Cambios guardados correctamente para {len(periodos_seleccionados)} período(s)")
+                                    st.success(f"✅ Cambios guardados correctamente")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error al guardar: {str(e)}")
@@ -600,7 +591,6 @@ with tab1:
                         total_ingresos_contrato += total_debo
                         total_egresos_contrato += total_gasto
             
-            # ===== TOTALES DEL CONTRATO =====
             if total_ingresos_contrato > 0 or total_egresos_contrato > 0:
                 st.markdown("#### 📊 Totales del Contrato")
                 utilidad_contrato = total_ingresos_contrato - total_egresos_contrato
@@ -608,23 +598,18 @@ with tab1:
                 
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    with st.container(border=True):
-                        st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>💰 Total Ingresos</div>", unsafe_allow_html=True)
-                        st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700; color: #1152d4;'>${total_ingresos_contrato:,.0f}</div>", unsafe_allow_html=True)
+                    st.markdown(f"**💰 Total Ingresos:** ${total_ingresos_contrato:,.0f}")
                 with col2:
-                    with st.container(border=True):
-                        st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>💸 Total Egresos</div>", unsafe_allow_html=True)
-                        st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700; color: #ef4444;'>${total_egresos_contrato:,.0f}</div>", unsafe_allow_html=True)
+                    st.markdown(f"**💸 Total Egresos:** ${total_egresos_contrato:,.0f}")
                 with col3:
-                    with st.container(border=True):
-                        st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>📊 Utilidad</div>", unsafe_allow_html=True)
-                        color = "#10b981" if utilidad_contrato > 0 else "#ef4444"
-                        st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700; color: {color};'>${utilidad_contrato:,.0f}</div>", unsafe_allow_html=True)
+                    color = "#10b981" if utilidad_contrato > 0 else "#ef4444"
+                    st.markdown(f"**📊 Utilidad:** <span style='color: {color};'>${utilidad_contrato:,.0f}</span>", unsafe_allow_html=True)
                 with col4:
-                    with st.container(border=True):
-                        st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>🎯 Margen %</div>", unsafe_allow_html=True)
-                        color_m = "#10b981" if margen_contrato >= 42 else "#f59e0b" if margen_contrato >= 30 else "#ef4444"
-                        st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: 700; color: {color_m};'>{margen_contrato:.1f}%</div>", unsafe_allow_html=True)
+                    color_m = "#10b981" if margen_contrato >= 42 else "#f59e0b" if margen_contrato >= 30 else "#ef4444"
+                    st.markdown(f"**🎯 Margen %:** <span style='color: {color_m};'>{margen_contrato:.1f}%</span>", unsafe_allow_html=True)
+
+
+
 
 with tab2:
     st.markdown("### 📈 Proyecciones por Contrato (Solo CPM)")
@@ -1029,23 +1014,57 @@ with tab3:
         )
     
     with col_l2:
-        df_periodos_liq = run_query("vw_general_semanal",
-                                    select="periodo",
-                                    filters={"periodo": f"{año_liquidacion}-%", "tipo_reporte": "CIERRE"})
-        periodos_liq = df_periodos_liq['periodo'].unique().tolist() if not df_periodos_liq.empty else []
+        # Obtener períodos disponibles para el año seleccionado
+        df_todos_periodos_liq = run_query("vw_general_semanal", 
+                                          select="periodo",
+                                          filters={"tipo_reporte": "CIERRE"})
+        
+        if not df_todos_periodos_liq.empty:
+            df_todos_periodos_liq['año'] = df_todos_periodos_liq['periodo'].str[:4]
+            df_periodos_liq = df_todos_periodos_liq[df_todos_periodos_liq['año'] == año_liquidacion]
+            periodos_liq = df_periodos_liq['periodo'].unique().tolist()
+        else:
+            periodos_liq = []
+        
         periodos_liq.sort()
         
         opciones_periodo_liq = ["TODOS"] + periodos_liq
-        periodo_liq = st.selectbox("📅 Período", opciones_periodo_liq, key="liq_periodo")
-        periodo_liq = None if periodo_liq == "TODOS" else periodo_liq
+        periodo_seleccionado = st.selectbox("📅 Período", opciones_periodo_liq, key="liq_periodo")
+        
+        # Validar que no sea TODOS
+        if periodo_seleccionado == "TODOS":
+            st.warning("⚠️ **Selecciona un período específico** (no 'TODOS') para ver la liquidación")
+            st.info("La liquidación requiere un período concreto para poder editar los montos pagados.")
+            st.stop()
+        
+        periodo_liq = periodo_seleccionado
     
     with col_l3:
-        contrato_liq = st.selectbox(
+        # Obtener contratos con datos en el período seleccionado
+        df_contratos_con_datos_liq = run_query("vw_general_semanal",
+                                               select="id_contrato",
+                                               filters={"periodo": periodo_liq, "tipo_reporte": "CIERRE"})
+        ids_contratos_con_datos_liq = df_contratos_con_datos_liq['id_contrato'].unique().tolist() if not df_contratos_con_datos_liq.empty else []
+        
+        df_contratos_liq = run_query("contratos", select="id, nombre", filters={"activo": 1})
+        df_contratos_liq = df_contratos_liq[df_contratos_liq['id'].isin(ids_contratos_con_datos_liq)] if ids_contratos_con_datos_liq else pd.DataFrame()
+        
+        contrato_opciones_liq = {"TODOS": None}
+        for _, c in df_contratos_liq.iterrows():
+            contrato_opciones_liq[c['nombre']] = c['id']
+        
+        contrato_seleccionado_liq = st.selectbox(
             "📋 Contrato",
-            list(contrato_opciones.keys()),
+            list(contrato_opciones_liq.keys()),
             key="liq_contrato"
         )
-        id_contrato_liq = contrato_opciones[contrato_liq] if contrato_liq != "TODOS" else None
+        
+        if contrato_seleccionado_liq == "TODOS":
+            st.warning("⚠️ **Selecciona un contrato específico** (no 'TODOS') para ver la liquidación")
+            st.info("La liquidación requiere un contrato específico para poder editar los montos pagados.")
+            st.stop()
+        
+        id_contrato_liq = contrato_opciones_liq[contrato_seleccionado_liq]
     
     with col_l4:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -1053,17 +1072,6 @@ with tab3:
             st.rerun()
     
     st.markdown("---")
-    
-    # ===== VALIDACIÓN =====
-    if periodo_liq is None:
-        st.warning("⚠️ **Selecciona un período específico** (no 'TODOS') para ver la liquidación")
-        st.info("La liquidación requiere un período concreto para poder editar los montos pagados.")
-        st.stop()
-    
-    if id_contrato_liq is None:
-        st.warning("⚠️ **Selecciona un contrato específico** (no 'TODOS') para ver la liquidación")
-        st.info("La liquidación requiere un contrato específico para poder editar los montos pagados.")
-        st.stop()
     
     # ===== INFORMACIÓN DEL CONTRATO =====
     info_contrato_liq = run_query("contratos", select="nombre", filters={"id": id_contrato_liq})
@@ -1108,7 +1116,6 @@ with tab3:
             # ===== VALORES POR DEFECTO DE CONCEPTOS (solo los que tienen valor > 0) =====
             df_conceptos_liq = run_query("conceptos_gastos", select="id, concepto", filters={"activo": 1})
             
-            # Agregar valores por defecto
             conceptos_con_valor = []
             for _, row in df_conceptos_liq.iterrows():
                 df_valores_def = run_query("valores_por_defecto",
@@ -1134,10 +1141,9 @@ with tab3:
             for _, row in df_pagado_real.iterrows():
                 pagado_dict[row['id_concepto']] = row['monto_cobrado']
             
-            # ===== CONSTRUIR TABLA (solo conceptos con Valorización Mina > 0) =====
+            # ===== CONSTRUIR TABLA =====
             rows_liq = []
             
-            # CPM
             if debo_cpm > 0:
                 rows_liq.append({
                     'Concepto': 'CPM',
@@ -1146,7 +1152,6 @@ with tab3:
                     'id_concepto': -1
                 })
             
-            # Venta Directa
             if debo_venta > 0:
                 rows_liq.append({
                     'Concepto': 'Venta Directa',
@@ -1155,7 +1160,6 @@ with tab3:
                     'id_concepto': -2
                 })
             
-            # Conceptos dinámicos
             for concepto in conceptos_con_valor:
                 rows_liq.append({
                     'Concepto': concepto['concepto'].upper(),
@@ -1171,18 +1175,17 @@ with tab3:
             # ===== MOSTRAR TABLA =====
             st.markdown("#### 💵 Liquidación por Concepto")
             
-            # Encabezados
             col1, col2, col3, col4, col5 = st.columns([2, 1.8, 1.8, 1.5, 1.5])
             with col1:
-                st.markdown("<div style='text-align: center; font-weight: bold;'>CONCEPTO</div>", unsafe_allow_html=True)
+                st.markdown("**CONCEPTO**")
             with col2:
-                st.markdown("<div style='text-align: center; font-weight: bold;'>VALORIZACIÓN MINA</div>", unsafe_allow_html=True)
+                st.markdown("**VALORIZACIÓN MINA**")
             with col3:
-                st.markdown("<div style='text-align: center; font-weight: bold;'>HES/LIQUIDACIÓN</div>", unsafe_allow_html=True)
+                st.markdown("**HES/LIQUIDACIÓN**")
             with col4:
-                st.markdown("<div style='text-align: center; font-weight: bold;'>DIFERENCIA</div>", unsafe_allow_html=True)
+                st.markdown("**DIFERENCIA**")
             with col5:
-                st.markdown("<div style='text-align: center; font-weight: bold;'>ESTADO</div>", unsafe_allow_html=True)
+                st.markdown("**ESTADO**")
             
             st.markdown("---")
             
@@ -1190,10 +1193,10 @@ with tab3:
                 col1, col2, col3, col4, col5 = st.columns([2, 1.8, 1.8, 1.5, 1.5])
                 
                 with col1:
-                    st.markdown(f"<div style='text-align: center;'>{row_item['Concepto']}</div>", unsafe_allow_html=True)
+                    st.markdown(row_item['Concepto'])
                 
                 with col2:
-                    st.markdown(f"<div style='text-align: right; font-weight: 500;'>${row_item['Valorizacion Mina']:,.0f}</div>", unsafe_allow_html=True)
+                    st.markdown(f"${row_item['Valorizacion Mina']:,.0f}")
                 
                 with col3:
                     nuevo_pagaron = st.number_input(
@@ -1216,16 +1219,16 @@ with tab3:
                         color = "#f59e0b"
                     else:
                         color = "#ef4444"
-                    st.markdown(f"<div style='text-align: right; font-weight: bold; color: {color};'>${diferencia:,.0f}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<span style='color: {color}; font-weight: bold;'>${diferencia:,.0f}</span>", unsafe_allow_html=True)
                 
                 with col5:
                     diferencia = rows_liq[idx]['Diferencia']
                     if abs(diferencia) <= 5:
-                        st.markdown("<div style='text-align: center; color: #10b981; font-weight: bold;'>✅ CONFORME</div>", unsafe_allow_html=True)
+                        st.markdown("✅ CONFORME")
                     elif diferencia < 0:
-                        st.markdown("<div style='text-align: center; color: #f59e0b; font-weight: bold;'>⚠️ EXCESO</div>", unsafe_allow_html=True)
+                        st.markdown("⚠️ EXCESO")
                     else:
-                        st.markdown("<div style='text-align: center; color: #ef4444; font-weight: bold;'>🔴 PENDIENTE</div>", unsafe_allow_html=True)
+                        st.markdown("🔴 PENDIENTE")
             
             # ===== SUBTOTALES Y TOTALES CON IGV =====
             subtotal_valorizacion = sum(r['Valorizacion Mina'] for r in rows_liq)
@@ -1241,49 +1244,45 @@ with tab3:
             
             st.markdown("---")
             
-            # Fila de SUBTOTAL
             col_s1, col_s2, col_s3, col_s4 = st.columns([2, 1.8, 1.8, 1.5])
             with col_s1:
-                st.markdown("<div style='text-align: center; font-weight: bold;'>SUBTOTAL</div>", unsafe_allow_html=True)
+                st.markdown("**SUBTOTAL**")
             with col_s2:
-                st.markdown(f"<div style='text-align: right; font-weight: bold;'>${subtotal_valorizacion:,.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"${subtotal_valorizacion:,.0f}")
             with col_s3:
-                st.markdown(f"<div style='text-align: right; font-weight: bold;'>${subtotal_hes:,.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"${subtotal_hes:,.0f}")
             with col_s4:
                 diferencia_color = "#10b981" if diferencia_subtotal >= 0 else "#ef4444"
-                st.markdown(f"<div style='text-align: right; font-weight: bold; color: {diferencia_color};'>${diferencia_subtotal:,.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"<span style='color: {diferencia_color};'>${diferencia_subtotal:,.0f}</span>", unsafe_allow_html=True)
             
-            # Fila de IGV
             col_i1, col_i2, col_i3, col_i4 = st.columns([2, 1.8, 1.8, 1.5])
             with col_i1:
-                st.markdown("<div style='text-align: center; font-weight: bold;'>IGV (18%)</div>", unsafe_allow_html=True)
+                st.markdown("**IGV (18%)**")
             with col_i2:
-                st.markdown(f"<div style='text-align: right; font-weight: bold;'>${igv_valorizacion:,.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"${igv_valorizacion:,.0f}")
             with col_i3:
-                st.markdown(f"<div style='text-align: right; font-weight: bold;'>${igv_hes:,.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"${igv_hes:,.0f}")
             with col_i4:
-                st.markdown("", unsafe_allow_html=True)
+                st.markdown("")
             
-            # Fila de TOTAL
             col_t1, col_t2, col_t3, col_t4 = st.columns([2, 1.8, 1.8, 1.5])
             with col_t1:
-                st.markdown("<div style='text-align: center; font-weight: bold;'>TOTAL</div>", unsafe_allow_html=True)
+                st.markdown("**TOTAL**")
             with col_t2:
-                st.markdown(f"<div style='text-align: right; font-weight: bold;'>${total_valorizacion:,.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"${total_valorizacion:,.0f}")
             with col_t3:
-                st.markdown(f"<div style='text-align: right; font-weight: bold;'>${total_hes:,.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"${total_hes:,.0f}")
             with col_t4:
                 diferencia_total_color = "#10b981" if diferencia_total >= 0 else "#ef4444"
-                st.markdown(f"<div style='text-align: right; font-weight: bold; color: {diferencia_total_color};'>${diferencia_total:,.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"<span style='color: {diferencia_total_color};'>${diferencia_total:,.0f}</span>", unsafe_allow_html=True)
             
-            # Estado final
             st.markdown("---")
             if abs(diferencia_total) <= 5:
-                st.markdown("<div style='text-align: center; color: #10b981; font-weight: bold; font-size: 1.2rem;'>✅ TOTAL CONFORME - DIFERENCIA ACEPTABLE</div>", unsafe_allow_html=True)
+                st.markdown("✅ TOTAL CONFORME - DIFERENCIA ACEPTABLE")
             elif diferencia_total < 0:
-                st.markdown("<div style='text-align: center; color: #f59e0b; font-weight: bold; font-size: 1.2rem;'>⚠️ EXCESO EN PAGO - REVISAR</div>", unsafe_allow_html=True)
+                st.markdown("⚠️ EXCESO EN PAGO - REVISAR")
             else:
-                st.markdown("<div style='text-align: center; color: #ef4444; font-weight: bold; font-size: 1.2rem;'>🔴 PENDIENTE DE PAGO</div>", unsafe_allow_html=True)
+                st.markdown("🔴 PENDIENTE DE PAGO")
             
             # ===== BOTONES =====
             col_btn1, col_btn2 = st.columns(2)
@@ -1325,7 +1324,6 @@ with tab3:
                 if st.button("🔄 Recargar", key=f"recargar_liq_{id_cliente}_{periodo_liq}", use_container_width=True):
                     st.rerun()
             
-            # Acumular totales generales (usando totales con IGV)
             total_general_valorizacion += total_valorizacion
             total_general_hes += total_hes
             total_general_diferencia += diferencia_total
@@ -1337,49 +1335,20 @@ with tab3:
         
         col_g1, col_g2, col_g3 = st.columns(3)
         with col_g1:
-            with st.container(border=True):
-                st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>💰 TOTAL VALORIZACIÓN (Con IGV)</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 1.5rem; font-weight: 700; color: #1152d4;'>${total_general_valorizacion:,.0f}</div>", unsafe_allow_html=True)
+            st.markdown(f"**💰 TOTAL VALORIZACIÓN (Con IGV):** ${total_general_valorizacion:,.0f}")
         with col_g2:
-            with st.container(border=True):
-                st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>💸 TOTAL HES (Con IGV)</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 1.5rem; font-weight: 700; color: #ef4444;'>${total_general_hes:,.0f}</div>", unsafe_allow_html=True)
+            st.markdown(f"**💸 TOTAL HES (Con IGV):** ${total_general_hes:,.0f}")
         with col_g3:
-            with st.container(border=True):
-                st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>📊 DIFERENCIA TOTAL</div>", unsafe_allow_html=True)
-                if abs(total_general_diferencia) <= 5:
-                    color = "#10b981"
-                    emoji = "✅"
-                elif total_general_diferencia < 0:
-                    color = "#f59e0b"
-                    emoji = "⚠️"
-                else:
-                    color = "#ef4444"
-                    emoji = "🔴"
-                st.markdown(f"<div style='text-align: center; font-size: 1.5rem; font-weight: 700; color: {color};'>${total_general_diferencia:,.0f} {emoji}</div>", unsafe_allow_html=True)
-        
-        col_g4, col_g5, col_g6 = st.columns(3)
-        with col_g4:
-            with st.container(border=True):
-                st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>📊 IGV VALORIZACIÓN</div>", unsafe_allow_html=True)
-                igv_general_v = (total_general_valorizacion / 1.18) * 0.18 if total_general_valorizacion > 0 else 0
-                st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: 700;'>${igv_general_v:,.0f}</div>", unsafe_allow_html=True)
-        with col_g5:
-            with st.container(border=True):
-                st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>📊 IGV HES</div>", unsafe_allow_html=True)
-                igv_general_h = (total_general_hes / 1.18) * 0.18 if total_general_hes > 0 else 0
-                st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: 700;'>${igv_general_h:,.0f}</div>", unsafe_allow_html=True)
-        with col_g6:
-            with st.container(border=True):
-                st.markdown("<div style='text-align: center; font-size: 0.75rem; color: #64748b;'>🎯 % COBRO</div>", unsafe_allow_html=True)
-                porcentaje_general = (total_general_hes / total_general_valorizacion * 100) if total_general_valorizacion > 0 else 0
-                if porcentaje_general >= 99:
-                    color = "#10b981"
-                elif porcentaje_general >= 90:
-                    color = "#f59e0b"
-                else:
-                    color = "#ef4444"
-                st.markdown(f"<div style='text-align: center; font-size: 1.5rem; font-weight: 700; color: {color};'>{porcentaje_general:.1f}%</div>", unsafe_allow_html=True)
+            if abs(total_general_diferencia) <= 5:
+                color = "#10b981"
+                emoji = "✅"
+            elif total_general_diferencia < 0:
+                color = "#f59e0b"
+                emoji = "⚠️"
+            else:
+                color = "#ef4444"
+                emoji = "🔴"
+            st.markdown(f"**📊 DIFERENCIA TOTAL:** <span style='color: {color};'>${total_general_diferencia:,.0f} {emoji}</span>", unsafe_allow_html=True)
 
 # ============================================================================
 # FOOTER
@@ -1392,6 +1361,10 @@ with footer_cols[0]:
 
 with footer_cols[1]:
     st.markdown("v2.0.0")
+
+with footer_cols[2]:
+    fecha_actual = datetime.now().strftime("%d/%m/%Y")
+    st.markdown(f"Última actualización: {fecha_actual}")
 
 with footer_cols[2]:
     fecha_actual = datetime.now().strftime("%d/%m/%Y")
