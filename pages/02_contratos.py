@@ -1302,7 +1302,7 @@ with tab3:
         periodos_disponibles_mensual = periodos_disponibles_mensual['periodo'].unique().tolist() if not periodos_disponibles_mensual.empty else []
         periodos_disponibles_mensual.sort(reverse=True)
         
-        st.write(f"🔍 DEBUG - periodos_disponibles_mensual: {periodos_disponibles_mensual}")
+        
         
         if not periodos_disponibles_mensual:
             st.warning("⚠️ No hay períodos con datos de CIERRE")
@@ -1322,7 +1322,7 @@ with tab3:
             if "TODOS" in periodos_seleccionados:
                 periodos_seleccionados = periodos_disponibles_mensual
         
-        st.write(f"🔍 DEBUG - periodos_seleccionados: {periodos_seleccionados}")
+       
         
         if not periodos_seleccionados:
             st.warning("⚠️ Seleccione al menos un período")
@@ -1332,17 +1332,16 @@ with tab3:
         df_contratos_mensual = run_query("vw_general_semanal", 
                                         select="id_contrato",
                                         filters={"periodo": periodos_seleccionados, "tipo_reporte": "CIERRE"})
-        st.write(f"🔍 DEBUG - df_contratos_mensual vacío?: {df_contratos_mensual.empty}")
         
-        if not df_contratos_mensual.empty:
-            st.write(f"🔍 DEBUG - ids encontrados: {df_contratos_mensual['id_contrato'].unique().tolist()}")
+        
+        
         
         ids_con_datos_mensual = df_contratos_mensual['id_contrato'].unique().tolist() if not df_contratos_mensual.empty else []
         
         df_contratos_nombres = run_query("contratos", select="id, nombre", filters={"activo": 1})
         df_contratos_nombres = df_contratos_nombres[df_contratos_nombres['id'].isin(ids_con_datos_mensual)] if ids_con_datos_mensual else pd.DataFrame()
         
-        st.write(f"🔍 DEBUG - contratos con datos: {df_contratos_nombres['nombre'].tolist() if not df_contratos_nombres.empty else []}")
+        
         
         if df_contratos_nombres.empty:
             st.warning(f"⚠️ No hay contratos con datos CIERRE en los períodos seleccionados")
