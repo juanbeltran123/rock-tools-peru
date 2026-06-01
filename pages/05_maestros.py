@@ -543,15 +543,14 @@ with tab5:
     else:
         st.info("No hay conceptos registrados")
 
-# ====================================================================
-# TAB 6: OBJETIVOS
-# ====================================================================
 with tab6:
     st.markdown("### 🎯 Gestión de Objetivos")
     
     # ================================================================
     # KEY DINÁMICA PARA EVITAR CACHÉ DE STREAMLIT
     # ================================================================
+    import time
+    import hashlib
     
     # Generar una key única basada en el tiempo
     if 'tab6_init_time' not in st.session_state:
@@ -703,11 +702,10 @@ with tab6:
                     if cliente_label != "(Todos los clientes)":
                         if cliente_label in dict_clientes:
                             id_cliente = dict_clientes[cliente_label]
-                            st.write(f"🔍 Cliente encontrado: {cliente_label} -> ID: {id_cliente}")
                         else:
                             st.warning(f"⚠️ Cliente '{cliente_label}' no encontrado en el diccionario")
                     
-                    # Insertar en BD
+                    # Preparar datos
                     data = {
                         'id_contrato': id_contrato,
                         'id_cliente': id_cliente,
@@ -718,9 +716,55 @@ with tab6:
                         'periodo_hasta': fecha_hasta.strftime('%Y-%m-%d') if fecha_hasta else None,
                         'observacion': observacion if observacion else None
                     }
-                    supabase.table('objetivos').insert(data).execute()
                     
-                    st.success("✅ Objetivo guardado correctamente")
+                    # Verificar si ya existe un objetivo con los mismos datos
+                    existing = supabase.table('objetivos').select('id')\
+                        .eq('id_contrato', id_contrato)\
+                        .eq('id_tipo_perforacion', id_tipo)\
+                        .eq('id_familia', id_familia)\
+                        .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))\
+                        .execute()
+                    
+                    if id_cliente:
+                        existing = supabase.table('objetivos').select('id')\
+                            .eq('id_contrato', id_contrato)\
+                            .eq('id_cliente', id_cliente)\
+                            .eq('id_tipo_perforacion', id_tipo)\
+                            .eq('id_familia', id_familia)\
+                            .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))\
+                            .execute()
+                    else:
+                        existing = supabase.table('objetivos').select('id')\
+                            .eq('id_contrato', id_contrato)\
+                            .is_('id_cliente', None)\
+                            .eq('id_tipo_perforacion', id_tipo)\
+                            .eq('id_familia', id_familia)\
+                            .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))\
+                            .execute()
+                    
+                    if existing.data:
+                        # Actualizar objetivo existente
+                        if id_cliente:
+                            supabase.table('objetivos').update(data)\
+                                .eq('id_contrato', id_contrato)\
+                                .eq('id_cliente', id_cliente)\
+                                .eq('id_tipo_perforacion', id_tipo)\
+                                .eq('id_familia', id_familia)\
+                                .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))\
+                                .execute()
+                        else:
+                            supabase.table('objetivos').update(data)\
+                                .eq('id_contrato', id_contrato)\
+                                .is_('id_cliente', None)\
+                                .eq('id_tipo_perforacion', id_tipo)\
+                                .eq('id_familia', id_familia)\
+                                .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))\
+                                .execute()
+                        st.success("✅ Objetivo actualizado correctamente")
+                    else:
+                        # Insertar nuevo objetivo
+                        supabase.table('objetivos').insert(data).execute()
+                        st.success("✅ Objetivo guardado correctamente")
                     
                     # Recargar la página
                     time.sleep(1)
