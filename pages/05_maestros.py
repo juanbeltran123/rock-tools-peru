@@ -607,12 +607,11 @@ with tab6:
     df_clientes = run_query("clientes", select="id, nombre, codigo",
                            filters={"activo": 1, "id_contrato": id_contrato})
     
-    # Crear diccionario de clientes para búsqueda fácil
+    # Crear diccionario de clientes
     dict_clientes = {}
     for _, row in df_clientes.iterrows():
         dict_clientes[f"{row['nombre']} ({row['codigo']})"] = row['id']
     
-    # Mostrar cuántos clientes se encontraron
     if len(df_clientes) > 0:
         st.caption(f"✅ {len(df_clientes)} cliente(s) encontrado(s) para este contrato")
     else:
@@ -625,7 +624,6 @@ with tab6:
         col1, col2 = st.columns(2)
         
         with col1:
-            # Cliente
             if len(df_clientes) > 0:
                 lista_clientes = ["(Todos los clientes)"] + list(dict_clientes.keys())
             else:
@@ -637,7 +635,6 @@ with tab6:
                 key=f"tab6_cliente_{dynamic_key}"
             )
             
-            # Tipo de Perforación
             tipo_nombre = st.selectbox(
                 "Tipo de Perforación *",
                 options=lista_tipos,
@@ -645,14 +642,12 @@ with tab6:
             )
         
         with col2:
-            # Familia
             familia_nombre = st.selectbox(
                 "Familia *",
                 options=lista_familias,
                 key=f"tab6_familia_{dynamic_key}"
             )
             
-            # Objetivo
             objetivo_valor = st.number_input(
                 "Objetivo *",
                 min_value=0.0,
@@ -661,7 +656,6 @@ with tab6:
                 key=f"tab6_objetivo_{dynamic_key}"
             )
             
-            # Fechas
             fecha_desde = st.date_input(
                 "Período Desde *",
                 value=date.today(),
@@ -673,13 +667,11 @@ with tab6:
                 key=f"tab6_hasta_{dynamic_key}"
             )
         
-        # Observación
         observacion = st.text_input(
             "Observación (opcional)",
             key=f"tab6_obs_{dynamic_key}"
         )
         
-        # Botón guardar
         submitted = st.form_submit_button(
             "💾 Guardar Objetivo",
             use_container_width=True,
@@ -687,25 +679,38 @@ with tab6:
         )
         
         if submitted:
-            # Validaciones
             if not contrato_nombre or not tipo_nombre or not familia_nombre or not objetivo_valor:
                 st.error("❌ Los campos marcados con * son obligatorios")
             else:
                 try:
                     supabase = get_supabase()
-                    # Obtener IDs
                     id_tipo = dict_tipos[tipo_nombre]
                     id_familia = dict_familias[familia_nombre]
                     
-                    # Obtener ID del cliente correctamente
                     id_cliente = None
                     if cliente_label != "(Todos los clientes)":
                         if cliente_label in dict_clientes:
                             id_cliente = dict_clientes[cliente_label]
-                        else:
-                            st.warning(f"⚠️ Cliente '{cliente_label}' no encontrado en el diccionario")
                     
-                    # Preparar datos
+                    # ==================================================
+                    # PRIMERO: ELIMINAR SI YA EXISTE (misma combinación)
+                    # ==================================================
+                    query_delete = supabase.table('objetivos').delete()\
+                        .eq('id_contrato', id_contrato)\
+                        .eq('id_tipo_perforacion', id_tipo)\
+                        .eq('id_familia', id_familia)\
+                        .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))
+                    
+                    if id_cliente:
+                        query_delete = query_delete.eq('id_cliente', id_cliente)
+                    else:
+                        query_delete = query_delete.is_('id_cliente', None)
+                    
+                    query_delete.execute()
+                    
+                    # ==================================================
+                    # SEGUNDO: INSERTAR EL NUEVO
+                    # ==================================================
                     data = {
                         'id_contrato': id_contrato,
                         'id_cliente': id_cliente,
@@ -717,56 +722,9 @@ with tab6:
                         'observacion': observacion if observacion else None
                     }
                     
-                    # Verificar si ya existe un objetivo con los mismos datos
-                    existing = supabase.table('objetivos').select('id')\
-                        .eq('id_contrato', id_contrato)\
-                        .eq('id_tipo_perforacion', id_tipo)\
-                        .eq('id_familia', id_familia)\
-                        .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))\
-                        .execute()
+                    supabase.table('objetivos').insert(data).execute()
+                    st.success("✅ Objetivo guardado correctamente")
                     
-                    if id_cliente:
-                        existing = supabase.table('objetivos').select('id')\
-                            .eq('id_contrato', id_contrato)\
-                            .eq('id_cliente', id_cliente)\
-                            .eq('id_tipo_perforacion', id_tipo)\
-                            .eq('id_familia', id_familia)\
-                            .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))\
-                            .execute()
-                    else:
-                        existing = supabase.table('objetivos').select('id')\
-                            .eq('id_contrato', id_contrato)\
-                            .is_('id_cliente', None)\
-                            .eq('id_tipo_perforacion', id_tipo)\
-                            .eq('id_familia', id_familia)\
-                            .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))\
-                            .execute()
-                    
-                    if existing.data:
-                        # Actualizar objetivo existente
-                        if id_cliente:
-                            supabase.table('objetivos').update(data)\
-                                .eq('id_contrato', id_contrato)\
-                                .eq('id_cliente', id_cliente)\
-                                .eq('id_tipo_perforacion', id_tipo)\
-                                .eq('id_familia', id_familia)\
-                                .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))\
-                                .execute()
-                        else:
-                            supabase.table('objetivos').update(data)\
-                                .eq('id_contrato', id_contrato)\
-                                .is_('id_cliente', None)\
-                                .eq('id_tipo_perforacion', id_tipo)\
-                                .eq('id_familia', id_familia)\
-                                .eq('periodo_desde', fecha_desde.strftime('%Y-%m-%d'))\
-                                .execute()
-                        st.success("✅ Objetivo actualizado correctamente")
-                    else:
-                        # Insertar nuevo objetivo
-                        supabase.table('objetivos').insert(data).execute()
-                        st.success("✅ Objetivo guardado correctamente")
-                    
-                    # Recargar la página
                     time.sleep(1)
                     st.rerun()
                     
@@ -782,7 +740,6 @@ with tab6:
     df_objetivos = run_query("objetivos", select="id, id_contrato, id_cliente, id_tipo_perforacion, id_familia, objetivo, periodo_desde, periodo_hasta, observacion")
     
     if not df_objetivos.empty:
-        # Obtener nombres
         df_contratos_nombres = run_query("contratos", select="id, nombre")
         df_tipos_nombres = run_query("tipo_perforacion", select="id, nombre")
         df_familias_nombres = run_query("familia", select="id, nombre")
@@ -803,7 +760,6 @@ with tab6:
         df_show.columns = ['ID', 'Contrato', 'Cliente', 'Tipo Perf.', 'Familia', 'Objetivo', 'Desde', 'Hasta', 'Observación']
         st.dataframe(df_show, use_container_width=True, hide_index=True)
         
-        # Opción para eliminar objetivos
         with st.expander("🗑️ Eliminar Objetivo"):
             objetivo_id = st.number_input("ID del Objetivo a eliminar", min_value=1, step=1, key="delete_objetivo_id")
             if st.button("Eliminar Objetivo", type="secondary"):
