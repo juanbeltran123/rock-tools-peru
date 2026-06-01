@@ -412,9 +412,7 @@ with st.container(border=True):
         st.dataframe(df_evolucion.head(10))
     else:
         st.error("❌ No se trajeron datos para los períodos seleccionados")
-        st.write("Períodos solicitados:", periodos_para_evolucion)
-        st.write("filtro_tipo_reporte:", filtro_tipo_reporte)
-        st.write("filtro_semana_valor:", filtro_semana_valor)
+
 
 
 
